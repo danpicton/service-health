@@ -241,6 +241,8 @@ def apply_scan_checks(
     clock=lambda: datetime.now(timezone.utc),
     max_workers=2,
     external_reports=None,
+    progress=None,
+    only_failed=False,
 ):
     """Refresh the DB and scans, retaining prior evidence on failure."""
     if max_workers < 1 or max_workers > 4:
@@ -253,6 +255,7 @@ def apply_scan_checks(
         for service in result
         for component in service.get("components", [])
         for deployment in component.get("deployments", [])
+        if not only_failed or deployment.get("scan_coverage") != "complete"
     ]
     try:
         scanner.refresh_db()
@@ -377,6 +380,14 @@ def apply_scan_checks(
                     if retained
                     else None,
                 )
+            if progress is not None:
+                _aggregate_scans(result)
+                progress(result)
+    _aggregate_scans(result)
+    return result
+
+
+def _aggregate_scans(result):
     for service in result:
         service_findings = []
         coverages = []
@@ -426,7 +437,6 @@ def apply_scan_checks(
             for component in service.get("components", [])
         )
         aggregate_security(service)
-    return result
 
 
 def scan_store_once(

@@ -160,7 +160,7 @@ def _groups(records):
 
 
 def apply_advisory_checks(
-    services, catalog, fetch_advisories=osv_advisories, clock=None
+    services, catalog, fetch_advisories=osv_advisories, clock=None, only_failed=False
 ):
     """Return cached advisory evidence, retaining prior evidence on failures."""
     checked_at = (
@@ -177,6 +177,8 @@ def apply_advisory_checks(
             for item in configured.get(service["id"], {}).get("components", [])
         }
         for component in service.get("components", []):
+            if only_failed and component.get("advisory_coverage") == "complete":
+                continue
             source = mapping.get(component["id"], {}).get("advisory_source")
             if (
                 not isinstance(source, dict)

@@ -25,6 +25,13 @@ checks compare the deployed platform manifest with the current tag; see
 and externally supplied reports for local images are described in
 [scanner checks](docs/scanner.md). See [upstream advisory checks](docs/advisories.md) for structured package mappings, one-shot collection, and coverage limits.
 
+The recurring worker can optionally read a dedicated GitHub token from
+`--github-token-file PATH`; anonymous release checks remain supported. The
+token file is operator-managed at runtime and must not enter the repository,
+catalog, image, SQLite backup, or HTTP process. See the
+[v0.1.0 collection migration](docs/integration.md#v010-collection-repair-migration)
+for the schema change, private-registry limits, and worker sizing checks.
+
 ## Local development
 
 Python 3.14 is pinned in `.python-version`. Runtime dependencies are Python's

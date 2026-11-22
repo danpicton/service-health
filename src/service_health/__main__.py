@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from service_health.advisories import apply_advisory_checks
+from service_health.github_cache import GitHubReleases
 from service_health.http import create_server
 from service_health.images import apply_image_checks
 from service_health.inventory import collect_inventory
@@ -45,6 +46,7 @@ def main() -> None:
     parser.add_argument("--external-report-max-age", type=int, default=172800)
     parser.add_argument("--registry", type=Path)
     parser.add_argument("--catalog", type=Path)
+    parser.add_argument("--github-token-file", type=Path)
     parser.add_argument("--kube-api")
     parser.add_argument(
         "--token-file",
@@ -79,6 +81,7 @@ def main() -> None:
             args.retry_initial,
             args.retry_max,
             args.scan_workers,
+            github_token_file=args.github_token_file,
         )
         return
     if args.scans_once or args.scans_scheduled:
@@ -131,7 +134,9 @@ def main() -> None:
         if snapshot is None:
             parser.error("--releases-once requires a cached inventory")
         services = apply_release_checks(
-            snapshot["services"], json.loads(args.catalog.read_text())
+            snapshot["services"],
+            json.loads(args.catalog.read_text()),
+            fetch_releases=GitHubReleases(store, args.github_token_file),
         )
         checked_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         store.replace(checked_at, services)
