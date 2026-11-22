@@ -1,5 +1,40 @@
 # Infrastructure integration handoff
 
+## v0.1.0 collection repair migration
+
+The next image automatically adds `jobs.state` and the credential-free
+`github_cache` table to the existing SQLite database. Back up the database and
+runtime catalog together before changing the pinned image digest. The HTTP and
+worker roles must continue sharing the same writable database and collection
+lock. No catalog format change is required. GitHub responses are shared by
+case-normalized `owner/repository`, cached for six hours, and revalidated with
+ETag after expiry. Rate-limit headers and `Retry-After` gate further requests
+for 60 to 3,600 seconds. A failed component is retried without refreshing
+successful release/image checks in the same retry series.
+
+Anonymous GitHub access remains the default. For a higher GitHub API quota,
+the operator may mount a dedicated, read-only token file **only in the worker**
+and append `--github-token-file /run/secrets/service-health/github-token` to
+its `--scheduled` command. The file must contain a token with only the needed
+repository read permission. Do not put the token in the catalog, SQLite,
+environment dump, image, HTTP container, or Homepage configuration. This token
+is for GitHub releases only. Kubernetes imagePullSecrets authenticate kubelet;
+they do not authenticate the application image comparison client. That client
+still supports anonymous public OCI registries only. A private registry 401/403
+is reported as unknown with an authentication-required reason. Trivy private
+image scans may use operator-managed Trivy credentials, or a fresh validated
+external report; those credentials are independent of this flag.
+
+The worker now marks jobs running before collection, commits each validated
+scan result under the existing collection lock, and marks a job interrupted
+when the worker disappears. A restarted worker resumes pending scans while
+retaining completed checks whose inventory identity remains unchanged. The
+first security cycle still needs enough time and temporary disk for all 54
+components; the observed 8 Gi temporary-storage limit remains an unverified
+starting point. Measure peak `/tmp`, Trivy cache PVC, memory, cycle duration,
+and eviction events before sizing the next release. Keep the existing
+inventory refresh and single-worker ordering.
+
 This is the contract for the separate infrastructure repository change. No
 image has been published or deployed. The local `linux/amd64` build and synthetic smoke test
 passed on the operator's workstation. The image was 303,129,933 bytes and the
@@ -57,7 +92,9 @@ External Trivy reports, if used, get a separate read-only mount and
 contain package inventory and must stay out of images and public artifacts.
 
 Initial sizing **estimates**, pending real scans: HTTP request 64 MiB and limit
-128 MiB; worker request 256 MiB and limit 1 GiB; 2 GiB scanner cache disk.
+128 MiB; worker request 256 MiB and limit 1 GiB. The original 2 Gi temporary
+storage limit caused a Trivy eviction; infrastructure raised it to 8 Gi, which
+still needs full-cycle measurement. Size the persistent scanner cache separately.
 Raise worker memory or lower `--scan-workers` if measured scans exceed the
 limit. Retain enough PVC space for the SQLite database and backups. Keep this
 single-node workload on the node with its local-path PVC; a rollout must not
