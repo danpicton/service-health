@@ -1,0 +1,4 @@
+[
+  {"id": "example-photos", "name": "Example Photos", "active": true},
+  {"id": "retired-example", "name": "Retired Example", "active": false}
+]

@@ -1,0 +1,39 @@
+{
+  "cache_state": "populated",
+  "checked_at": "2026-11-22T12:00:00Z",
+  "jobs": {},
+  "stale": false,
+  "service_count": 1,
+  "update_status": "update available",
+  "update_coverage_complete": false,
+  "image_status": "unknown",
+  "image_counts": {
+    "image rebuild available": 0,
+    "up to date": 0,
+    "unknown": 1,
+    "check failed": 0
+  },
+  "update_counts": {
+    "update available": 1,
+    "up to date": 0,
+    "unknown": 0,
+    "check failed": 0
+  },
+  "security_status": "findings",
+  "coverage_complete": false,
+  "coverage_gap_service_count": 1,
+  "security_counts": {
+    "findings": 1,
+    "no known findings": 0,
+    "incomplete coverage": 0,
+    "check failed": 0
+  },
+  "scan_coverage": "missing",
+  "critical_count": 0,
+  "high_count": 1,
+  "confirmed_finding_count": 1,
+  "fix_available_count": 1,
+  "possible_finding_count": 0,
+  "advisory_coverage": "missing",
+  "message": "Cached aggregate assessment across active services."
+}

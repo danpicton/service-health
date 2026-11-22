@@ -1,0 +1,35 @@
+.venv/
+__pycache__/
+*.pyc
+*.db
+*.db-*
+.ruff_cache/
+
+# Local agent context and operator workspace data are never publication inputs.
+.agents/
+.aws/
+.codex/
+.scratch/
+AGENTS.md
+HANDOFF.md
+
+# Runtime and credential material must stay outside the repository.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*kubeconfig*
+*credentials*
+*secret*.yaml
+*secret*.yml
+*secret*.json
+*.sops.*
+*.sqlite
+*.sqlite-*
+*.log
+*.tar
+*.tar.gz
+*.zip

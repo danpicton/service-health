@@ -1,0 +1,206 @@
+{
+  "id": "example",
+  "detail_path": "/services/example",
+  "inventory_status": "observed",
+  "inventory_error": null,
+  "inventory_stale": false,
+  "component_count": 2,
+  "components": [
+    {
+      "id": "app",
+      "name": "Application",
+      "kind": "regular",
+      "current_version": "1.0.0",
+      "candidate_version": "1.1.0",
+      "update_status": "update available",
+      "update_kind": "minor",
+      "release_checked_at": "2026-11-22T12:00:00Z",
+      "release_stale": false,
+      "release_source_url": "https://example.org/releases/1.1.0",
+      "scan_coverage": "complete",
+      "advisory_coverage": "complete",
+      "advisory_findings": [
+        {
+          "id": "GHSA-aaaa-bbbb-cccc",
+          "aliases": [
+            "CVE-2026-0001"
+          ],
+          "match": "confirmed",
+          "severity": "high",
+          "source": "OSV upstream advisory",
+          "current_version": "1.0.0",
+          "fixed_versions": [
+            "1.1.0"
+          ],
+          "provenance": [
+            {
+              "id": "GHSA-aaaa-bbbb-cccc",
+              "url": "https://osv.dev/vulnerability/GHSA-aaaa-bbbb-cccc",
+              "affected_ranges": [
+                {
+                  "introduced": "0",
+                  "fixed": "1.1.0"
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "deployments": [
+        {
+          "namespace": "fictional",
+          "pod": "example-1",
+          "node": "node-1",
+          "container": "app",
+          "kind": "regular",
+          "image": "example/app:1.0.0",
+          "image_id": "example/app@sha256:abc",
+          "digest": "sha256:abc",
+          "platform": "linux/amd64",
+          "state": "observed",
+          "image_status": "up to date",
+          "scan_coverage": "complete",
+          "scan_findings": [
+            {
+              "id": "CVE-2026-0001",
+              "severity": "high",
+              "package": "libexample",
+              "installed_version": "1.0",
+              "fixed_version": "1.1",
+              "source": "Trivy",
+              "source_url": "https://example.org/CVE-2026-0001",
+              "target": "fixture",
+              "digest": "sha256:abc",
+              "platform": "linux/amd64"
+            }
+          ],
+          "scan_checked_at": "2026-11-22T12:00:00Z"
+        }
+      ],
+      "scan_findings": [
+        {
+          "id": "CVE-2026-0001",
+          "severity": "high",
+          "package": "libexample",
+          "installed_version": "1.0",
+          "fixed_version": "1.1",
+          "source": "Trivy",
+          "source_url": "https://example.org/CVE-2026-0001",
+          "target": "fixture",
+          "digest": "sha256:abc",
+          "platform": "linux/amd64"
+        }
+      ],
+      "confirmed_findings": [
+        {
+          "id": "CVE-2026-0001",
+          "aliases": [
+            "CVE-2026-0001",
+            "GHSA-aaaa-bbbb-cccc"
+          ],
+          "component_id": "app",
+          "severity": "high",
+          "fix_available": true,
+          "sources": [
+            {
+              "type": "Trivy",
+              "finding": {
+                "id": "CVE-2026-0001",
+                "severity": "high",
+                "package": "libexample",
+                "installed_version": "1.0",
+                "fixed_version": "1.1",
+                "source": "Trivy",
+                "source_url": "https://example.org/CVE-2026-0001",
+                "target": "fixture",
+                "digest": "sha256:abc",
+                "platform": "linux/amd64"
+              }
+            },
+            {
+              "type": "upstream advisory",
+              "finding": {
+                "id": "GHSA-aaaa-bbbb-cccc",
+                "aliases": [
+                  "CVE-2026-0001"
+                ],
+                "match": "confirmed",
+                "severity": "high",
+                "source": "OSV upstream advisory",
+                "current_version": "1.0.0",
+                "fixed_versions": [
+                  "1.1.0"
+                ],
+                "provenance": [
+                  {
+                    "id": "GHSA-aaaa-bbbb-cccc",
+                    "url": "https://osv.dev/vulnerability/GHSA-aaaa-bbbb-cccc",
+                    "affected_ranges": [
+                      {
+                        "introduced": "0",
+                        "fixed": "1.1.0"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ],
+      "possible_finding_count": 0,
+      "coverage_complete": true,
+      "security_status": "findings"
+    },
+    {
+      "id": "database",
+      "name": "Database",
+      "kind": "regular",
+      "current_version": null,
+      "candidate_version": null,
+      "update_status": "unknown",
+      "scan_coverage": "missing",
+      "advisory_coverage": "missing",
+      "advisory_gap": "no supported source",
+      "advisory_findings": [],
+      "scan_findings": [],
+      "deployments": [],
+      "confirmed_findings": [],
+      "possible_finding_count": 0,
+      "coverage_complete": false,
+      "security_status": "incomplete coverage"
+    }
+  ],
+  "current_version": null,
+  "candidate_version": null,
+  "update_status": "update available",
+  "update_kind": null,
+  "image_status": "unknown",
+  "candidate_image_digest": null,
+  "image_coverage_complete": false,
+  "image_checked_at": null,
+  "image_stale": false,
+  "image_errors": [],
+  "update_coverage_complete": false,
+  "release_stale": false,
+  "release_checked_at": "2026-11-22T12:00:00Z",
+  "release_errors": [],
+  "security_status": "findings",
+  "scan_coverage": "missing",
+  "scan_sources": [],
+  "scan_checked_at": "2026-11-22T12:00:00Z",
+  "scan_stale": false,
+  "scan_errors": [],
+  "advisory_coverage": "missing",
+  "advisory_checked_at": "2026-11-22T12:00:00Z",
+  "advisory_stale": false,
+  "advisory_errors": [],
+  "possible_finding_count": 0,
+  "confirmed_finding_count": 1,
+  "coverage_complete": false,
+  "critical_count": 0,
+  "high_count": 1,
+  "fix_available_count": 1,
+  "checked_at": "2026-11-22T12:00:00Z",
+  "stale": false
+}

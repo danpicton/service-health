@@ -1,0 +1,66 @@
+# Illustrative Homepage v1.10.1 services.yaml fragment. Keep existing activity
+# widgets for each actual service; append the two reporter widgets.
+- Example group:
+    - Example & Friends:
+        icon: mdi-heart-pulse
+        href: /service-health/services/example
+        widgets:
+          - type: uptimekuma # Illustrative pre-existing activity widget
+            url: http://uptime-kuma.monitoring.svc.cluster.local:3001
+            slug: example
+          - type: customapi
+            url: http://service-health.monitoring.svc.cluster.local:8080/api/v1/services/example/homepage
+            display: list
+            refreshInterval: 60000
+            mappings:
+              - field: update_status
+                label: Application update
+              - field: current_version
+                label: Current version
+              - field: candidate_version
+                label: Candidate version
+              - field: image_status
+                label: Image rebuild
+              - field: update_coverage_complete
+                label: Update coverage complete
+              - field: stale
+                label: Stale evidence
+          - type: customapi
+            url: http://service-health.monitoring.svc.cluster.local:8080/api/v1/services/example/homepage
+            display: list
+            refreshInterval: 60000
+            mappings:
+              - field: security_status
+                label: Security
+              - field: critical_count
+                label: Critical findings
+                format: number
+              - field: high_count
+                label: High findings
+                format: number
+              - field: fix_available_count
+                label: Fix evidence
+                format: number
+              - field: coverage_complete
+                label: Security coverage complete
+              - field: checked_at
+                label: Cache written
+    - Service health summary:
+        icon: mdi-heart-pulse
+        href: /service-health/
+        widget:
+          type: customapi
+          url: http://service-health.monitoring.svc.cluster.local:8080/api/v1/summary
+          display: list
+          refreshInterval: 60000
+          mappings:
+            - field: update_status
+              label: Overall update
+            - field: security_counts.findings
+              label: Services with findings
+              format: number
+            - field: coverage_gap_service_count
+              label: Services with coverage gaps
+              format: number
+            - field: stale
+              label: Stale evidence

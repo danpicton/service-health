@@ -1,0 +1,34 @@
+[
+  {
+    "id": "example-photos",
+    "components": [
+      {
+        "id": "server",
+        "name": "Application server",
+        "version_annotation": "example.org/application-version",
+        "release_source": {
+          "type": "github_releases",
+          "repository": "example/example-photos",
+          "version_policy": "semver",
+          "tag_prefix": "v"
+        },
+        "selector": {
+          "namespace": "example-apps",
+          "pod_labels": {"app.kubernetes.io/name": "example-photos"},
+          "container": "server",
+          "kind": "regular"
+        }
+      },
+      {
+        "id": "migration",
+        "name": "Database migration",
+        "selector": {
+          "namespace": "example-apps",
+          "pod_labels": {"app.kubernetes.io/name": "example-photos"},
+          "container": "migrate",
+          "kind": "init"
+        }
+      }
+    ]
+  }
+]
