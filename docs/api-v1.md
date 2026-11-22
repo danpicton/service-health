@@ -11,12 +11,20 @@ one offline assessment: `api-v1-summary.json`, `api-v1-services.json`,
 Fields may be added within v1.
 Consumers should ignore fields they do not use.
 
+The services list and Homepage response now omit `scan_findings`,
+`advisory_findings`, and `confirmed_findings` at service, component, and
+deployment level. Their `components` still carry identity, status, coverage,
+timestamps, counts, and error fields. Fetch `/api/v1/services/{id}` or
+`/services/{id}` for the complete finding tree. This coordinated v1 response
+reduction keeps the 42 commonly polled dashboard widgets small; consumers that
+used list or Homepage findings arrays must use the detail route.
+
 | Route | Success | Body |
 | --- | --- | --- |
 | `GET /healthz` | 200 | `{"status":"alive"}`: process liveness only |
 | `GET /readyz` | 200 | `status: ready`, `cache_state: empty\|populated` |
 | `GET /api/v1/summary` | 200 | Overall service counts, coverage, freshness, jobs |
-| `GET /api/v1/services` | 200 | `cache_state`, `checked_at`, `services` array |
+| `GET /api/v1/services` | 200 | `cache_state`, `checked_at`, compact `services` array |
 | `GET /api/v1/services/{id}` | 200 | Service and component evidence plus `checked_at` |
 | `GET /api/v1/services/{id}/homepage` | 200 | Stable flat fields for Custom API widgets |
 | `GET /` and `/services/{id}` | 200 | HTML findings pages |

@@ -1,7 +1,7 @@
 """Reconcile independent component checks into cached service signals."""
 
 
-def _coverage(values):
+def coverage_state(values):
     return (
         "complete"
         if values and all(value == "complete" for value in values)
@@ -88,16 +88,16 @@ def aggregate_security(service):
             component.get("scan_coverage") == "complete"
             and component.get("advisory_coverage") == "complete"
         )
-        component["security_status"] = _security_status(
+        component["security_status"] = security_status(
             component["confirmed_findings"],
             component.get("scan_coverage"),
             component.get("advisory_coverage"),
             component["coverage_complete"],
         )
-    service["scan_coverage"] = _coverage(
+    service["scan_coverage"] = coverage_state(
         [component.get("scan_coverage") for component in components]
     )
-    service["advisory_coverage"] = _coverage(
+    service["advisory_coverage"] = coverage_state(
         [component.get("advisory_coverage") for component in components]
     )
     service["coverage_complete"] = bool(components) and all(
@@ -125,7 +125,7 @@ def aggregate_security(service):
     service["advisory_stale"] = any(
         component.get("advisory_stale", False) for component in components
     )
-    service["security_status"] = _security_status(
+    service["security_status"] = security_status(
         service["confirmed_findings"],
         service["scan_coverage"],
         service["advisory_coverage"],
@@ -133,7 +133,7 @@ def aggregate_security(service):
     )
 
 
-def _security_status(findings, scan_coverage, advisory_coverage, complete):
+def security_status(findings, scan_coverage, advisory_coverage, complete):
     if findings:
         return "findings"
     if "failed" in (scan_coverage, advisory_coverage):

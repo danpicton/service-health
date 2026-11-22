@@ -1,6 +1,7 @@
 """Merge fresh deployment observations with identity-bound cached evidence."""
 
 import fcntl
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -223,20 +224,44 @@ def merge_inventory(services, previous):
     return services
 
 
-def refresh_inventory(store, collect, clock=lambda: datetime.now(timezone.utc)):
-    """Fetch before locking, then merge against the latest committed snapshot."""
+def refresh_inventory(
+    store,
+    collect,
+    clock=lambda: datetime.now(timezone.utc),
+    wait_seconds=120,
+    monotonic=time.monotonic,
+    sleep=time.sleep,
+    cancelled=lambda: False,
+):
+    """Wait briefly for a commit slot, then observe and publish current pods."""
     attempted = clock().astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     try:
-        fresh = collect()
-        lock_path = Path(str(store.path) + ".collection.lock")
+        lock_path = Path(str(store.path) + ".inventory.lock")
+        deadline = monotonic() + wait_seconds
         with lock_path.open("w") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            while True:
+                if cancelled():
+                    raise TimeoutError(
+                        "inventory refresh cancelled while waiting for lock"
+                    )
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    remaining = deadline - monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(
+                            "inventory commit lock wait exceeded deadline"
+                        )
+                    sleep(min(0.25, remaining))
+            fresh = collect()
             previous = store.read()
             merged = merge_inventory(fresh, previous["services"] if previous else None)
-            store.replace(attempted, merged)
-            store.record_job("inventory", attempted, None)
-    except BlockingIOError:
-        raise  # another cycle owns the cache; this is not a failed inventory check
+            succeeded = (
+                clock().astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+            )
+            store.replace(succeeded, merged)
+            store.record_job("inventory", succeeded, None)
     except Exception as error:
         store.record_job("inventory", attempted, f"{type(error).__name__}: {error}")
         raise

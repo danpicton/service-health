@@ -216,7 +216,37 @@ Custom API widget has no block highlighting; the text fields are the signal.
    backup with the prior image and matching runtime catalog, then verify the
    API and collector again. Do not overwrite the only backup while testing.
 
+## Reporter memory and hourly inventory follow-up
+
+The application now stores compact service rows for dashboard reads and loads
+finding details one service at a time. See [memory profile](memory.md) for a
+30.4 MB synthetic snapshot: HTTP completed concurrent dashboard reads under
+a 256 MiB address-space limit, peaking near 51 MiB RSS. Keep detail routes
+reachable from the browser; Homepage widgets should use summary and per-service
+Homepage fields, and the custom findings UI should fetch detail only when opened.
+
+Homepage currently has two Custom API widgets per service plus a custom UI poll.
+In the infrastructure repository, preserve each native activity widget, then
+remove duplicate Custom API polls by using one status source per service or
+slowing the secondary widgets and custom UI. Hiding a widget does not stop its
+polling. Check actual requests after the change and retain separate update and
+security signals and the detail-page link.
+
+The inventory Job now waits up to 120 seconds for the short inventory commit
+lock, then reads Kubernetes state and publishes it. The existing hourly
+CronJob's 900-second active deadline and four backoff retries need no change
+for this wait policy. Verify an hourly refresh **while** the scheduled worker
+is scanning: the inventory job should succeed without fast retries; its
+`jobs.inventory.succeeded_at` should advance, and changed digest/platform or
+version should invalidate affected checks. A timeout or Kubernetes API error
+should appear in `jobs.inventory.error` while the prior snapshot remains
+available. Stop both scheduled worker and inventory Job before quiesced backup;
+both `.collection.lock` and `.inventory.lock` are stored beside SQLite.
+
 ## Known limits
+
+- The memory result is a synthetic bound, not an observation of the live pod.
+- Actual Trivy subprocess memory was not measured on the development host.
 
 - OSV structured mappings do not cover every upstream advisory; an unsupported
   source or uncertain affected range is an explicit coverage gap or possible

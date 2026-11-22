@@ -113,7 +113,8 @@ def main() -> None:
             parser.error("--images-once requires a cached inventory")
         services = apply_image_checks(snapshot["services"])
         checked_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        store.replace(checked_at, services)
+        if store.commit_evidence(checked_at, services):
+            raise RuntimeError("inventory changed during collection; retry required")
         return
     if args.advisories_once:
         if not args.catalog:
@@ -125,7 +126,8 @@ def main() -> None:
             snapshot["services"], json.loads(args.catalog.read_text())
         )
         checked_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        store.replace(checked_at, services)
+        if store.commit_evidence(checked_at, services):
+            raise RuntimeError("inventory changed during collection; retry required")
         return
     if args.releases_once:
         if not args.catalog:
@@ -139,7 +141,8 @@ def main() -> None:
             fetch_releases=GitHubReleases(store, args.github_token_file),
         )
         checked_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        store.replace(checked_at, services)
+        if store.commit_evidence(checked_at, services):
+            raise RuntimeError("inventory changed during collection; retry required")
         return
     if args.inventory_once:
         if not args.registry or not args.catalog:

@@ -66,13 +66,19 @@ def run_job(
                     clock,
                     scan_workers,
                     external_reports,
-                    progress=lambda partial: store.replace(_stamp(clock), partial),
+                    progress=lambda partial: store.commit_evidence(
+                        _stamp(clock), partial
+                    ),
                     only_failed=scan_retry,
                 )
                 services = apply_advisory_checks(
                     services, catalog, clock=clock, only_failed=scan_retry
                 )
-            store.replace(attempted, services)
+            inventory_changed = store.commit_evidence(attempted, services)
+            if inventory_changed:
+                raise RuntimeError(
+                    "inventory changed during collection; retry required"
+                )
             failed = (
                 any(
                     component.get("update_status") == "check failed"

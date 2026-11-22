@@ -18,6 +18,8 @@ The inventory slice now resolves active registry services to explicit regular an
 init container mappings, including deployed image IDs, digests, and platform when
 the Kubernetes API provides them. See [inventory input and collection](docs/inventory.md)
 for the non-secret catalog, one-shot in-cluster command, and required read-only RBAC.
+The [reporter memory profile](docs/memory.md) records synthetic dashboard and
+worker measurements and the compact response contract.
 Release checks use configured public GitHub releases and reliable annotated
 application versions. See [release checks](docs/releases.md). Same-tag image
 checks compare the deployed platform manifest with the current tag; see
