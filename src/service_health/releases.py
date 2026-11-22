@@ -67,9 +67,7 @@ def github_releases(source: dict) -> list[dict]:
     """Read up to 100 recent GitHub releases for a configured public repository."""
     if source.get("type") != "github_releases":
         raise ValueError("unsupported release source")
-    repository = source.get("repository", "")
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
-        raise ValueError("invalid GitHub repository")
+    repository = _repository(source)
     url = (
         "https://api.github.com/repos/"
         + quote(repository, safe="/")
@@ -87,6 +85,17 @@ def github_releases(source: dict) -> list[dict]:
     if not isinstance(releases, list):
         raise ValueError("release response must be an array")
     return releases
+
+
+def _repository(source: dict) -> str:
+    if source.get("type") != "github_releases":
+        raise ValueError("unsupported release source")
+    repository = source.get("repository", "")
+    if not isinstance(repository, str) or not re.fullmatch(
+        r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository
+    ):
+        raise ValueError("invalid GitHub repository")
+    return repository.lower()
 
 
 def _check(
@@ -172,7 +181,7 @@ def _check(
         component.update(
             update_status="unknown",
             update_kind=None,
-            update_reason="deployed application version is unknown or ambiguous",
+            update_reason="missing verified application version or ambiguous version",
         )
     elif len(parsed[0]) != len(current[0]):
         component.update(
@@ -204,6 +213,7 @@ def apply_release_checks(
     catalog: list[dict],
     fetch_releases=github_releases,
     clock=None,
+    only_failed=False,
 ) -> list[dict]:
     """Return updated service snapshots without changing caller data."""
     checked_at = (
@@ -213,6 +223,20 @@ def apply_release_checks(
         .replace("+00:00", "Z")
     )
     result = copy.deepcopy(services)
+    fetched = {}
+
+    def shared_fetch(source):
+        key = _repository(source)
+        if key not in fetched:
+            try:
+                fetched[key] = fetch_releases(source)
+            except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:
+                fetched[key] = error
+        value = fetched[key]
+        if isinstance(value, Exception):
+            raise value
+        return value
+
     by_id = {item["id"]: item for item in catalog}
     for service in result:
         configured = by_id.get(service["id"], {})
@@ -220,6 +244,8 @@ def apply_release_checks(
             item["id"]: item for item in configured.get("components", [])
         }
         for component in service.get("components", []):
+            if only_failed and component.get("update_status") != "check failed":
+                continue
             source = configured_components.get(component["id"], {}).get(
                 "release_source"
             )
@@ -228,7 +254,7 @@ def apply_release_checks(
                     "track_prereleases": configured.get("track_prereleases", False),
                     **source,
                 }
-            _check(component, source, fetch_releases, checked_at)
+            _check(component, source, shared_fetch, checked_at)
         components = service.get("components", [])
         statuses = {item.get("update_status", "unknown") for item in components}
         service["update_status"] = next(

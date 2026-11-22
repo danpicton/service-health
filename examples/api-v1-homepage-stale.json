@@ -187,8 +187,10 @@
   "current_version": null,
   "candidate_version": null,
   "update_status": "check failed",
+  "update_reason": "fixture upstream timeout",
   "update_kind": null,
   "image_status": "check failed",
+  "image_reason": "fixture upstream timeout",
   "candidate_image_digest": null,
   "image_coverage_complete": false,
   "image_checked_at": null,
@@ -196,6 +198,7 @@
   "image_errors": [
     "fixture upstream timeout"
   ],
+  "image_reasons": [],
   "update_coverage_complete": false,
   "release_stale": true,
   "release_checked_at": "2026-11-22T12:00:00Z",
@@ -203,7 +206,9 @@
     "fixture upstream timeout",
     "fixture upstream timeout"
   ],
+  "update_reasons": [],
   "security_status": "findings",
+  "security_reason": "no supported source",
   "scan_coverage": "missing",
   "scan_sources": [],
   "scan_checked_at": "2026-11-22T12:00:00Z",
@@ -213,6 +218,9 @@
   "advisory_checked_at": "2026-11-22T12:00:00Z",
   "advisory_stale": false,
   "advisory_errors": [],
+  "advisory_gaps": [
+    "no supported source"
+  ],
   "possible_finding_count": 0,
   "confirmed_finding_count": 1,
   "coverage_complete": false,

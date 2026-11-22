@@ -141,9 +141,20 @@ def _platform_digest(image, reference, platform, manifest, blob) -> str:
 
 
 def _check_deployment(deployment, manifest, blob, checked_at):
-    image = _image_ref(deployment.get("image"))
+    image_reference = deployment.get("image")
+    image = _image_ref(image_reference)
     running = deployment.get("digest")
     platform = deployment.get("platform")
+    if isinstance(image_reference, str) and re.match(
+        r"^(?:localhost|127(?:\.\d+){3})(?::\d+)?/", image_reference
+    ):
+        deployment.update(
+            image_status="unknown",
+            image_reason="unsupported local image; supply an external scan report",
+            image_error=None,
+            image_stale=False,
+        )
+        return
     if (
         not image
         or not isinstance(platform, str)
@@ -164,6 +175,21 @@ def _check_deployment(deployment, manifest, blob, checked_at):
         platform_parts = platform.split("/")
         current = _platform_digest(image, image[2], platform_parts, manifest, blob)
         deployed = _platform_digest(image, running, platform_parts, manifest, blob)
+    except HTTPError as error:
+        deployment.update(
+            image_status="unknown" if error.code in (401, 403) else "check failed",
+            image_reason=(
+                "private registry authentication required; "
+                "application image comparison is anonymous only"
+            )
+            if error.code in (401, 403)
+            else None,
+            image_error=None
+            if error.code in (401, 403)
+            else f"registry HTTP {error.code}",
+            image_stale=bool(deployment.get("candidate_image_digest")),
+        )
+        return
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         deployment.update(
             image_status="check failed",
@@ -184,7 +210,11 @@ def _check_deployment(deployment, manifest, blob, checked_at):
 
 
 def apply_image_checks(
-    services, manifest=registry_manifest, blob=registry_blob, clock=None
+    services,
+    manifest=registry_manifest,
+    blob=registry_blob,
+    clock=None,
+    only_failed=False,
 ):
     """Return a new cached snapshot with independent image rebuild evidence."""
     checked_at = (
@@ -199,6 +229,8 @@ def apply_image_checks(
         for component in service.get("components", []):
             deployments = component.get("deployments", [])
             for deployment in deployments:
+                if only_failed and deployment.get("image_status") != "check failed":
+                    continue
                 _check_deployment(deployment, manifest, blob, checked_at)
             statuses = {item.get("image_status", "unknown") for item in deployments}
             component["image_status"] = next(
