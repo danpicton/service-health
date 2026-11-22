@@ -63,6 +63,11 @@ pushing an explicit matching tag from an approved release commit. Tag creation
 and pushing require operator authorization; this repository has not published
 an image.
 
+Before each subsequent release, update `project.version` in `pyproject.toml`,
+run `uv lock` to update `uv.lock`, and commit both files before creating the
+matching tag. The version guard reads the files at the tagged commit; rerunning
+a failed tag run does not pick up later changes on `main`.
+
 The release has two tags: the version (for example `v0.1.0`) and the full commit
 identifier prefixed with `sha-`. It has OCI `source`, `revision`, and `version`
 labels. BuildKit attaches an SBOM and max-level build provenance to the pushed
