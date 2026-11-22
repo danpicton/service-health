@@ -1,0 +1,7 @@
+# Admit only the Dockerfile and importable source. Runtime data and developer files
+# never enter the build context, including files added to this repo in the future.
+*
+!Dockerfile
+!src/
+!src/service_health/
+!src/service_health/*.py

@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://service-health.example.invalid/schema/api-v1.json",
+  "title": "Service Health API v1 response shapes",
+  "description": "Select the route's $defs entry as the validation schema. Additional evidence fields may be added within v1; named fields and enum meanings are stable.",
+  "$defs": {
+    "timestamp": { "type": ["string", "null"], "format": "date-time" },
+    "nullableString": { "type": ["string", "null"] },
+    "nullableIdentity": { "type": ["object", "null"] },
+    "updateStatus": { "enum": ["update available", "up to date", "unknown", "check failed"] },
+    "imageStatus": { "enum": ["image rebuild available", "up to date", "unknown", "check failed"] },
+    "securityStatus": { "enum": ["findings", "no known findings", "incomplete coverage", "check failed"] },
+    "coverage": { "enum": ["complete", "missing", "failed"] },
+    "counts": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+    "job": {
+      "type": "object", "required": ["attempted_at", "succeeded_at", "error", "failures"],
+      "properties": {
+        "attempted_at": { "$ref": "#/$defs/timestamp" },
+        "succeeded_at": { "$ref": "#/$defs/timestamp" },
+        "error": { "$ref": "#/$defs/nullableString" },
+        "failures": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["cache_state", "checked_at", "jobs", "stale", "service_count", "update_status", "update_coverage_complete", "image_status", "image_counts", "update_counts", "security_status", "coverage_complete", "coverage_gap_service_count", "security_counts", "scan_coverage", "advisory_coverage", "critical_count", "high_count", "confirmed_finding_count", "fix_available_count", "possible_finding_count", "message"],
+      "properties": {
+        "cache_state": { "enum": ["empty", "populated"] },
+        "checked_at": { "$ref": "#/$defs/timestamp" },
+        "jobs": { "type": "object", "additionalProperties": { "$ref": "#/$defs/job" } },
+        "stale": { "type": "boolean" },
+        "service_count": { "type": "integer", "minimum": 0 },
+        "update_status": { "$ref": "#/$defs/updateStatus" },
+        "update_coverage_complete": { "type": "boolean" },
+        "image_status": { "$ref": "#/$defs/imageStatus" },
+        "image_counts": { "$ref": "#/$defs/counts" },
+        "update_counts": { "$ref": "#/$defs/counts" },
+        "security_status": { "$ref": "#/$defs/securityStatus" },
+        "coverage_complete": { "type": "boolean" },
+        "coverage_gap_service_count": { "type": "integer", "minimum": 0 },
+        "security_counts": { "$ref": "#/$defs/counts" },
+        "scan_coverage": { "$ref": "#/$defs/coverage" },
+        "advisory_coverage": { "$ref": "#/$defs/coverage" },
+        "critical_count": { "type": "integer", "minimum": 0 },
+        "high_count": { "type": "integer", "minimum": 0 },
+        "confirmed_finding_count": { "type": "integer", "minimum": 0 },
+        "fix_available_count": { "type": "integer", "minimum": 0 },
+        "possible_finding_count": { "type": "integer", "minimum": 0 },
+        "message": { "type": "string" }
+      }
+    },
+    "finding": {
+      "type": "object", "required": ["id", "severity"],
+      "properties": {
+        "id": { "type": "string" }, "aliases": { "type": "array", "items": { "type": "string" } },
+        "severity": { "enum": ["critical", "high", "medium", "low", "unknown"] },
+        "package": { "type": "string" }, "installed_version": { "$ref": "#/$defs/nullableString" },
+        "fixed_version": { "$ref": "#/$defs/nullableString" },
+        "fixed_versions": { "type": "array", "items": { "type": "string" } },
+        "source_url": { "$ref": "#/$defs/nullableString" },
+        "source": { "type": "string" }, "current_version": { "$ref": "#/$defs/nullableString" },
+        "provenance": { "type": "array", "items": { "$ref": "#/$defs/provenance" } },
+        "match": { "enum": ["confirmed", "possible"] },
+        "reason": { "$ref": "#/$defs/nullableString" },
+        "digest": { "type": "string" }, "platform": { "type": "string" },
+        "scan_source": { "type": "string" }, "scan_reported_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "provenance": {
+      "type": "object", "required": ["id", "url", "affected_ranges"],
+      "properties": {
+        "id": { "type": "string" }, "url": { "type": "string", "format": "uri" },
+        "affected_ranges": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "confirmedFinding": {
+      "type": "object", "required": ["id", "aliases", "component_id", "severity", "fix_available", "sources"],
+      "properties": {
+        "id": { "type": "string" },
+        "aliases": { "type": "array", "items": { "type": "string" } },
+        "component_id": { "type": "string" },
+        "severity": { "enum": ["critical", "high", "medium", "low", "unknown"] },
+        "fix_available": { "type": "boolean" },
+        "sources": { "type": "array", "items": {
+          "type": "object", "required": ["type", "finding"],
+          "properties": { "type": { "enum": ["Trivy", "upstream advisory"] }, "finding": { "$ref": "#/$defs/finding" } }
+        } }
+      }
+    },
+    "deployment": {
+      "type": "object", "required": ["namespace", "pod", "node", "container", "kind", "image", "image_id", "digest", "platform", "state"],
+      "properties": {
+        "namespace": { "type": "string" }, "pod": { "$ref": "#/$defs/nullableString" },
+        "node": { "$ref": "#/$defs/nullableString" }, "container": { "type": "string" },
+        "kind": { "enum": ["regular", "init"] }, "image": { "$ref": "#/$defs/nullableString" },
+        "image_id": { "$ref": "#/$defs/nullableString" }, "digest": { "$ref": "#/$defs/nullableString" },
+        "platform": { "$ref": "#/$defs/nullableString" }, "state": { "type": "string" },
+        "application_version": { "$ref": "#/$defs/nullableString" },
+        "image_status": { "$ref": "#/$defs/imageStatus" },
+        "image_reason": { "$ref": "#/$defs/nullableString" }, "image_error": { "$ref": "#/$defs/nullableString" },
+        "candidate_image_digest": { "$ref": "#/$defs/nullableString" },
+        "deployed_platform_digest": { "$ref": "#/$defs/nullableString" },
+        "image_checked_at": { "$ref": "#/$defs/timestamp" }, "image_stale": { "type": "boolean" },
+        "scan_coverage": { "$ref": "#/$defs/coverage" }, "scan_error": { "$ref": "#/$defs/nullableString" },
+        "scan_findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+        "scan_digest": { "$ref": "#/$defs/nullableString" }, "scan_platform": { "$ref": "#/$defs/nullableString" },
+        "scan_checked_at": { "$ref": "#/$defs/timestamp" }, "scan_stale": { "type": "boolean" },
+        "scan_source": { "$ref": "#/$defs/nullableString" }, "scan_reported_at": { "$ref": "#/$defs/timestamp" }
+      }
+    },
+    "component": {
+      "type": "object", "required": ["id", "name", "kind", "current_version", "deployments"],
+      "properties": {
+        "id": { "type": "string" }, "name": { "type": "string" },
+        "kind": { "enum": ["regular", "init"] }, "current_version": { "$ref": "#/$defs/nullableString" },
+        "version_evidence": { "$ref": "#/$defs/nullableString" },
+        "release_identity": { "$ref": "#/$defs/nullableIdentity" },
+        "advisory_source_identity": { "$ref": "#/$defs/nullableIdentity" },
+        "advisory_identity": { "$ref": "#/$defs/nullableIdentity" },
+        "deployments": { "type": "array", "items": { "$ref": "#/$defs/deployment" } },
+        "inventory_status": { "type": "string" }, "candidate_version": { "$ref": "#/$defs/nullableString" },
+        "update_status": { "$ref": "#/$defs/updateStatus" }, "update_kind": { "$ref": "#/$defs/nullableString" },
+        "update_reason": { "$ref": "#/$defs/nullableString" }, "release_source_url": { "$ref": "#/$defs/nullableString" },
+        "release_checked_at": { "$ref": "#/$defs/timestamp" }, "release_error": { "$ref": "#/$defs/nullableString" },
+        "release_stale": { "type": "boolean" }, "image_status": { "$ref": "#/$defs/imageStatus" },
+        "image_coverage_complete": { "type": "boolean" }, "image_checked_at": { "$ref": "#/$defs/timestamp" },
+        "image_stale": { "type": "boolean" }, "scan_coverage": { "$ref": "#/$defs/coverage" },
+        "scan_findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+        "scan_stale": { "type": "boolean" }, "advisory_coverage": { "$ref": "#/$defs/coverage" },
+        "advisory_findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+        "advisory_checked_at": { "$ref": "#/$defs/timestamp" }, "advisory_stale": { "type": "boolean" },
+        "advisory_error": { "$ref": "#/$defs/nullableString" }, "advisory_gap": { "$ref": "#/$defs/nullableString" },
+        "confirmed_findings": { "type": "array", "items": { "$ref": "#/$defs/confirmedFinding" } },
+        "security_status": { "$ref": "#/$defs/securityStatus" }, "coverage_complete": { "type": "boolean" },
+        "possible_finding_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "service": {
+      "type": "object", "required": ["id"],
+      "properties": {
+        "id": { "type": "string" }, "name": { "type": "string" },
+        "checked_at": { "$ref": "#/$defs/timestamp" },
+        "current_version": { "$ref": "#/$defs/nullableString" }, "candidate_version": { "$ref": "#/$defs/nullableString" },
+        "inventory_status": { "type": "string" }, "inventory_error": { "$ref": "#/$defs/nullableString" },
+        "inventory_stale": { "type": "boolean" },
+        "components": { "type": "array", "items": { "$ref": "#/$defs/component" } },
+        "update_status": { "$ref": "#/$defs/updateStatus" }, "update_kind": { "$ref": "#/$defs/nullableString" },
+        "update_coverage_complete": { "type": "boolean" },
+        "release_checked_at": { "$ref": "#/$defs/timestamp" }, "release_stale": { "type": "boolean" },
+        "image_status": { "$ref": "#/$defs/imageStatus" }, "image_coverage_complete": { "type": "boolean" },
+        "candidate_image_digest": { "$ref": "#/$defs/nullableString" },
+        "image_checked_at": { "$ref": "#/$defs/timestamp" }, "image_stale": { "type": "boolean" },
+        "security_status": { "$ref": "#/$defs/securityStatus" },
+        "scan_coverage": { "$ref": "#/$defs/coverage" }, "scan_sources": { "type": "array", "items": { "type": "string" } },
+        "scan_checked_at": { "$ref": "#/$defs/timestamp" }, "scan_stale": { "type": "boolean" },
+        "scan_findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+        "advisory_coverage": { "$ref": "#/$defs/coverage" }, "advisory_checked_at": { "$ref": "#/$defs/timestamp" },
+        "advisory_attempted_at": { "$ref": "#/$defs/timestamp" },
+        "advisory_stale": { "type": "boolean" }, "advisory_findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+        "confirmed_findings": { "type": "array", "items": { "$ref": "#/$defs/confirmedFinding" } },
+        "coverage_complete": { "type": "boolean" }, "stale": { "type": "boolean" },
+        "critical_count": { "type": "integer", "minimum": 0 }, "high_count": { "type": "integer", "minimum": 0 },
+        "confirmed_finding_count": { "type": "integer", "minimum": 0 },
+        "fix_available_count": { "type": "integer", "minimum": 0 },
+        "possible_finding_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "serviceDetail": {
+      "allOf": [{ "$ref": "#/$defs/service" }, { "type": "object", "required": ["checked_at"] }]
+    },
+    "serviceList": {
+      "type": "object", "required": ["cache_state", "checked_at", "services"],
+      "properties": {
+        "cache_state": { "enum": ["empty", "populated"] },
+        "checked_at": { "$ref": "#/$defs/timestamp" },
+        "services": { "type": "array", "items": { "$ref": "#/$defs/serviceListItem" } }
+      }
+    },
+    "serviceListItem": { "$ref": "#/$defs/service" },
+    "homepage": {
+      "type": "object", "required": ["id", "detail_path", "inventory_status", "inventory_error", "inventory_stale", "component_count", "components", "current_version", "candidate_version", "update_status", "update_kind", "image_status", "candidate_image_digest", "image_coverage_complete", "image_checked_at", "image_stale", "image_errors", "update_coverage_complete", "release_stale", "release_checked_at", "release_errors", "security_status", "scan_coverage", "scan_sources", "scan_checked_at", "scan_stale", "scan_errors", "advisory_coverage", "advisory_checked_at", "advisory_stale", "advisory_errors", "possible_finding_count", "confirmed_finding_count", "coverage_complete", "critical_count", "high_count", "fix_available_count", "checked_at", "stale"],
+      "properties": {
+        "id": { "type": "string" }, "detail_path": { "type": "string", "pattern": "^/services/" },
+        "inventory_status": { "type": "string" }, "inventory_error": { "$ref": "#/$defs/nullableString" },
+        "inventory_stale": { "type": "boolean" }, "component_count": { "type": "integer", "minimum": 0 },
+        "components": { "type": "array", "items": { "$ref": "#/$defs/component" } },
+        "current_version": { "$ref": "#/$defs/nullableString" },
+        "candidate_version": { "$ref": "#/$defs/nullableString" },
+        "update_status": { "$ref": "#/$defs/updateStatus" },
+        "update_kind": { "$ref": "#/$defs/nullableString" },
+        "image_status": { "$ref": "#/$defs/imageStatus" },
+        "candidate_image_digest": { "$ref": "#/$defs/nullableString" },
+        "image_coverage_complete": { "type": "boolean" },
+        "image_checked_at": { "$ref": "#/$defs/timestamp" }, "image_stale": { "type": "boolean" },
+        "image_errors": { "type": "array", "items": { "type": "string" } },
+        "update_coverage_complete": { "type": "boolean" },
+        "release_stale": { "type": "boolean" }, "release_checked_at": { "$ref": "#/$defs/timestamp" },
+        "release_errors": { "type": "array", "items": { "type": "string" } },
+        "security_status": { "$ref": "#/$defs/securityStatus" },
+        "scan_coverage": { "$ref": "#/$defs/coverage" },
+        "scan_sources": { "type": "array", "items": { "type": "string" } },
+        "scan_checked_at": { "$ref": "#/$defs/timestamp" }, "scan_stale": { "type": "boolean" },
+        "scan_errors": { "type": "array", "items": { "type": "string" } },
+        "advisory_coverage": { "$ref": "#/$defs/coverage" },
+        "advisory_checked_at": { "$ref": "#/$defs/timestamp" },
+        "advisory_stale": { "type": "boolean" },
+        "advisory_errors": { "type": "array", "items": { "type": "string" } },
+        "possible_finding_count": { "type": "integer", "minimum": 0 },
+        "confirmed_finding_count": { "type": "integer", "minimum": 0 },
+        "coverage_complete": { "type": "boolean" },
+        "critical_count": { "type": "integer", "minimum": 0 },
+        "high_count": { "type": "integer", "minimum": 0 },
+        "fix_available_count": { "type": "integer", "minimum": 0 },
+        "checked_at": { "$ref": "#/$defs/timestamp" }, "stale": { "type": "boolean" }
+      }
+    },
+    "health": { "type": "object", "required": ["status"], "properties": { "status": { "const": "alive" } } },
+    "ready": { "type": "object", "required": ["status", "cache_state"], "properties": { "status": { "const": "ready" }, "cache_state": { "enum": ["empty", "populated"] } } },
+    "error": { "type": "object", "required": ["error"], "properties": { "error": { "type": "string" } } }
+  }
+}

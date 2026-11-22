@@ -1,0 +1,39 @@
+{
+  "cache_state": "empty",
+  "checked_at": null,
+  "jobs": {},
+  "stale": false,
+  "service_count": 0,
+  "update_status": "unknown",
+  "update_coverage_complete": false,
+  "image_status": "unknown",
+  "image_counts": {
+    "image rebuild available": 0,
+    "up to date": 0,
+    "unknown": 0,
+    "check failed": 0
+  },
+  "update_counts": {
+    "update available": 0,
+    "up to date": 0,
+    "unknown": 0,
+    "check failed": 0
+  },
+  "security_status": "incomplete coverage",
+  "coverage_complete": false,
+  "coverage_gap_service_count": 0,
+  "security_counts": {
+    "findings": 0,
+    "no known findings": 0,
+    "incomplete coverage": 0,
+    "check failed": 0
+  },
+  "scan_coverage": "missing",
+  "critical_count": 0,
+  "high_count": 0,
+  "confirmed_finding_count": 0,
+  "fix_available_count": 0,
+  "possible_finding_count": 0,
+  "advisory_coverage": "missing",
+  "message": "No cached collection has completed; services have not been assessed."
+}

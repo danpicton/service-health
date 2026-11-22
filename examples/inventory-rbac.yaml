@@ -1,0 +1,29 @@
+# Illustrative infrastructure-owned RBAC. Set the namespace to the chosen
+# deployment namespace and bind this account only to the inventory process.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: service-health-inventory
+  namespace: service-health
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: service-health-inventory
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: service-health-inventory
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: service-health-inventory
+subjects:
+  - kind: ServiceAccount
+    name: service-health-inventory
+    namespace: service-health
