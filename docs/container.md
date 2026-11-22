@@ -22,7 +22,8 @@ container runtime supports them. It neither calls Kubernetes nor scans an image.
 
 ## Persistent paths and processes
 
-Mount `/var/lib/service-health` for the SQLite database and its lock file.
+Mount `/var/lib/service-health` for the SQLite database and its collection and
+inventory lock files.
 Mount `/var/cache/service-health` for Trivy vulnerability databases, image
 layers, and other scanner cache files. Both are writable by UID/GID 65532. The
 image starts as that unprivileged user, serves port 8080, and defaults to

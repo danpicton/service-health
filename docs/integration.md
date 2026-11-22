@@ -202,7 +202,33 @@ Custom API widget has no block highlighting; the text fields are the signal.
    backup with the prior image and matching runtime catalog, then verify the
    API and collector again. Do not overwrite the only backup while testing.
 
+## Reporter memory and hourly inventory follow-up
+
+The application now stores compact service rows for dashboard reads and loads
+finding details one service at a time. See [memory profile](memory.md) for a
+30.4 MB synthetic snapshot: HTTP completed concurrent dashboard reads under
+a 256 MiB address-space limit, peaking near 51 MiB RSS. Keep detail routes
+reachable from the browser; Homepage widgets should use summary and per-service
+Homepage fields, and the custom findings UI should fetch detail only when opened.
+
+If multiple widgets or clients request the same status, use one status source
+per service or reduce the frequency of secondary polls. Check actual requests
+after the change and retain separate update and security signals and the
+detail-page link.
+
+The inventory Job now waits up to 120 seconds for the short inventory commit
+lock, then reads Kubernetes state and publishes it. Allow time for the lock
+and inventory request in the Job's deadline. Verify a refresh **while** the
+scheduled worker is scanning. The inventory job should succeed without fast retries, its
+`jobs.inventory.succeeded_at` should advance, and changed digest/platform or
+version should invalidate affected checks. A timeout or Kubernetes API error
+should appear in `jobs.inventory.error` while the prior snapshot remains
+available. Stop both scheduled worker and inventory Job before quiesced backup;
+both `.collection.lock` and `.inventory.lock` are stored beside SQLite.
+
 ## Known limits
+
+- The synthetic HTTP memory profile covers the fixture described above.
 
 - OSV structured mappings do not cover every upstream advisory; an unsupported
   source or uncertain affected range is an explicit coverage gap or possible

@@ -456,4 +456,5 @@ def scan_store_once(
         result = apply_scan_checks(
             snapshot["services"], scanner, clock, max_workers, external_reports
         )
-        store.replace(_timestamp(clock), result)
+        if store.commit_evidence(_timestamp(clock), result):
+            raise RuntimeError("inventory changed during collection; retry required")

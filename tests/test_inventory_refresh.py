@@ -1,6 +1,8 @@
 """Inventory refresh keeps only evidence for the currently observed identities."""
 
 import fcntl
+import json
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -9,6 +11,7 @@ from test_inventory import component, pod
 
 from service_health.inventory import collect_inventory
 from service_health.inventory_refresh import refresh_inventory
+from service_health.schedule import run_job
 
 
 class InventoryRefreshTest(HttpHarness):
@@ -152,20 +155,134 @@ class InventoryRefreshTest(HttpHarness):
         self.assertEqual(component["advisory_findings"], [])
         self.assertEqual(component["deployments"][0]["scan_coverage"], "complete")
 
-    def test_refresh_does_not_write_during_another_cycle(self):
+    def test_refresh_reports_bounded_commit_contention(self):
         self.seed()
         before = self.store.read()
-        lock_path = Path(str(self.database) + ".collection.lock")
+        lock_path = Path(str(self.database) + ".inventory.lock")
         with lock_path.open("w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            with self.assertRaises(BlockingIOError):
+            with self.assertRaisesRegex(TimeoutError, "deadline"):
                 refresh_inventory(
                     self.store,
                     lambda: self.inventory(digest="b"),
                     lambda: self.now + timedelta(minutes=1),
+                    wait_seconds=0,
                 )
         self.assertEqual(self.store.read(), before)
-        self.assertNotIn("inventory", self.store.read_jobs())
+        self.assertIn("lock wait", self.store.read_jobs()["inventory"]["error"])
+
+    def test_wait_retries_and_collects_after_lock_is_available(self):
+        self.seed()
+        lock_path = Path(str(self.database) + ".inventory.lock")
+        ticks = [0.0]
+        calls = []
+        with lock_path.open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+
+            def sleep(duration):
+                ticks[0] += duration
+                calls.append(duration)
+                if len(calls) == 6:
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+
+            refresh_inventory(
+                self.store,
+                lambda: self.inventory(digest="b"),
+                lambda: self.now + timedelta(minutes=1),
+                wait_seconds=2,
+                monotonic=lambda: ticks[0],
+                sleep=sleep,
+            )
+        self.assertEqual(len(calls), 6)
+        self.assertEqual(
+            self.store.read()["services"][0]["components"][0]["deployments"][0][
+                "digest"
+            ],
+            "sha256:" + "b" * 64,
+        )
+
+    def test_cancelled_wait_keeps_previous_evidence(self):
+        before = self.seed()
+        lock_path = Path(str(self.database) + ".inventory.lock")
+        with lock_path.open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            with self.assertRaisesRegex(TimeoutError, "cancelled"):
+                refresh_inventory(
+                    self.store,
+                    self.inventory,
+                    wait_seconds=2,
+                    cancelled=lambda: True,
+                )
+        self.assertEqual(self.store.read()["checked_at"], before)
+        self.assertIn("cancelled", self.store.read_jobs()["inventory"]["error"])
+
+    def test_scan_cannot_replace_new_inventory_identity(self):
+        self.seed()
+        started = threading.Event()
+        release = threading.Event()
+        errors = []
+        catalog = Path(self.directory.name) / "catalog.json"
+        catalog.write_text(json.dumps(self.catalog))
+
+        class SlowScanner:
+            def refresh_db(self):
+                pass
+
+            def scan(self, target, platform):
+                started.set()
+                if not release.wait(5):
+                    raise TimeoutError("test scan stalled")
+                return {
+                    "SchemaVersion": 2,
+                    "ArtifactName": target,
+                    "Metadata": {
+                        "ImageConfig": {"os": "linux", "architecture": "amd64"}
+                    },
+                    "Results": [],
+                }
+
+        def scan_job():
+            try:
+                run_job(
+                    self.store,
+                    "security",
+                    catalog,
+                    scanner=SlowScanner(),
+                    clock=lambda: self.now,
+                )
+            except RuntimeError as error:
+                errors.append(str(error))
+
+        worker = threading.Thread(target=scan_job)
+        worker.start()
+        try:
+            self.assertTrue(started.wait(5))
+            refresh_inventory(
+                self.store,
+                lambda: self.inventory(digest="b"),
+                lambda: self.now + timedelta(minutes=1),
+            )
+        finally:
+            release.set()
+            worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertIn("inventory changed", errors[0])
+        deployment = self.store.read()["services"][0]["components"][0]["deployments"][0]
+        self.assertEqual(deployment["digest"], "sha256:" + "b" * 64)
+        self.assertEqual(deployment["scan_coverage"], "missing")
+        self.assertNotIn("scan_findings", deployment)
+        self.assertIsNotNone(self.store.read_jobs()["inventory"]["succeeded_at"])
+
+    def test_scan_cannot_restore_old_pod_facts_with_same_digest(self):
+        self.seed()
+        scan_input = self.store.read()["services"]
+        fresh = self.inventory()
+        fresh[0]["components"][0]["deployments"][0]["pod"] = "app-1"
+        refresh_inventory(self.store, lambda: fresh, lambda: self.now)
+        self.assertTrue(self.store.commit_evidence("2026-11-22T12:01:00Z", scan_input))
+        deployment = self.store.read()["services"][0]["components"][0]["deployments"][0]
+        self.assertEqual(deployment["pod"], "app-1")
+        self.assertEqual(deployment["scan_coverage"], "complete")
 
     def test_failed_refresh_retains_snapshot_and_marks_inventory_stale(self):
         self.seed()

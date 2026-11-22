@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import patch
 
 from service_health.aggregation import aggregate_security
 from service_health.http import make_handler
@@ -138,6 +139,56 @@ def request(store: Store, path: str) -> tuple[int, str]:
 
 
 class ApiContractTest(unittest.TestCase):
+    def test_dashboard_reads_omit_findings_but_detail_keeps_them(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.db")
+            store.replace(CHECKED, [representative_service()])
+            with patch.object(store, "read", side_effect=AssertionError("full read")):
+                for route in (
+                    "/healthz",
+                    "/readyz",
+                    "/api/v1/summary",
+                    "/api/v1/services",
+                    "/api/v1/services/example/homepage",
+                ):
+                    self.assertEqual(request(store, route)[0], 200)
+            _, listing = request(store, "/api/v1/services")
+            _, homepage = request(store, "/api/v1/services/example/homepage")
+            _, detail = request(store, "/api/v1/services/example")
+            self.assertNotIn("CVE-2026-0001", listing)
+            self.assertNotIn("CVE-2026-0001", homepage)
+            self.assertIn("CVE-2026-0001", detail)
+
+    def test_existing_snapshot_is_indexed_without_a_full_python_read(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.db"
+            store = Store(path)
+            with store._connect() as connection:
+                connection.execute(
+                    "INSERT INTO snapshot VALUES (1, ?, ?)",
+                    (CHECKED, json.dumps([representative_service()])),
+                )
+            upgraded = Store(path)
+            self.assertEqual(upgraded.read_compact()["services"][0]["id"], "example")
+            self.assertIn(
+                "CVE-2026-0001",
+                json.dumps(upgraded.read_service("example")),
+            )
+
+    def test_compact_failed_check_keeps_known_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.db")
+            store.replace(CHECKED, [representative_service()])
+            store.record_job("security", CHECKED, "scanner unavailable")
+            summary = json.loads(request(store, "/api/v1/summary")[1])
+            homepage = json.loads(
+                request(store, "/api/v1/services/example/homepage")[1]
+            )
+            self.assertEqual(summary["security_status"], "findings")
+            self.assertEqual(homepage["security_status"], "findings")
+            self.assertEqual(homepage["confirmed_finding_count"], 1)
+            self.assertFalse(homepage["coverage_complete"])
+
     def test_internal_links_use_origin_relative_navigation_and_encoded_ids(
         self,
     ) -> None:
