@@ -177,14 +177,20 @@
         "services": { "type": "array", "items": { "$ref": "#/$defs/serviceListItem" } }
       }
     },
-    "serviceListItem": { "$ref": "#/$defs/service" },
+    "serviceListItem": {
+      "description": "Service fields and component metadata without findings arrays; fetch serviceDetail for findings.",
+      "$ref": "#/$defs/service"
+    },
     "homepage": {
       "type": "object", "required": ["id", "detail_path", "inventory_status", "inventory_error", "inventory_stale", "component_count", "components", "current_version", "candidate_version", "update_status", "update_kind", "image_status", "candidate_image_digest", "image_coverage_complete", "image_checked_at", "image_stale", "image_errors", "update_coverage_complete", "release_stale", "release_checked_at", "release_errors", "security_status", "scan_coverage", "scan_sources", "scan_checked_at", "scan_stale", "scan_errors", "advisory_coverage", "advisory_checked_at", "advisory_stale", "advisory_errors", "possible_finding_count", "confirmed_finding_count", "coverage_complete", "critical_count", "high_count", "fix_available_count", "checked_at", "stale"],
       "properties": {
         "id": { "type": "string" }, "detail_path": { "type": "string", "pattern": "^/services/" },
         "inventory_status": { "type": "string" }, "inventory_error": { "$ref": "#/$defs/nullableString" },
         "inventory_stale": { "type": "boolean" }, "component_count": { "type": "integer", "minimum": 0 },
-        "components": { "type": "array", "items": { "$ref": "#/$defs/component" } },
+        "components": {
+          "description": "Component metadata without findings arrays; fetch serviceDetail for findings.",
+          "type": "array", "items": { "$ref": "#/$defs/component" }
+        },
         "current_version": { "$ref": "#/$defs/nullableString" },
         "candidate_version": { "$ref": "#/$defs/nullableString" },
         "update_status": { "$ref": "#/$defs/updateStatus" },

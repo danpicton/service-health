@@ -61,10 +61,11 @@ It needs no access to Secrets, ConfigMaps, workloads, pod logs, or
 exec. A namespace-scoped Role can replace cluster-wide pod listing only if the
 collector is later configured to query each selected namespace separately.
 
-`GET /api/v1/services` and the detail endpoint carry the same `components` array.
-The Homepage endpoint retains flat status fields and also includes `component_count`
-and `components` for detailed consumers. The root and service pages render each
-component with observed image, running digest, platform, and known version. A
+`GET /api/v1/services` and Homepage include compact `components` metadata without
+finding arrays. The detail endpoint carries complete components and findings.
+The Homepage endpoint retains flat status fields and `component_count`.
+The root and service detail pages render each component with observed image,
+running digest, platform, and known version. A
 null digest means the runtime did not provide a trustworthy `sha256` image ID;
 `localhost/...:latest` stays an image reference, not a verified version. Inventory
 is evidence of deployment only: update and security statuses remain unknown and

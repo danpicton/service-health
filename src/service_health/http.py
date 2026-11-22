@@ -4,6 +4,7 @@ import html
 import json
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import BoundedSemaphore
 from urllib.parse import quote, unquote, urlsplit
 
 from service_health.freshness import project
@@ -145,7 +146,7 @@ def _homepage(service: dict, checked_at: str | None) -> dict:
         "inventory_error": service.get("inventory_error"),
         "inventory_stale": service.get("inventory_stale", False),
         "component_count": len(service.get("components", [])),
-        "components": service.get("components", []),
+        "components": components,
         "current_version": service.get("current_version"),
         "candidate_version": service.get("candidate_version"),
         "update_status": service.get("update_status", "unknown"),
@@ -582,24 +583,39 @@ def make_handler(
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             path = unquote(urlsplit(self.path).path)
-            snapshot = project(
-                store.read(),
-                store.read_jobs(),
-                clock,
-                release_max_age,
-                security_max_age,
-            )
             if path == "/healthz":
                 self._json(200, {"status": "alive"})
-            elif path == "/readyz":
+                return
+            if path == "/readyz":
                 self._json(
                     200,
                     {
                         "status": "ready",
-                        "cache_state": _summary(snapshot)["cache_state"],
+                        "cache_state": store.cache_state(),
                     },
                 )
-            elif path == "/api/v1/summary":
+                return
+            detail = path.startswith("/api/v1/services/") or path.startswith(
+                "/services/"
+            )
+            if detail:
+                service_id = (
+                    path.removeprefix("/api/v1/services/")
+                    .removeprefix("/services/")
+                    .removesuffix("/homepage")
+                )
+                raw = store.read_service(service_id, path.endswith("/homepage"))
+            else:
+                raw = store.read_compact()
+            snapshot = project(
+                raw,
+                store.read_jobs(),
+                clock,
+                release_max_age,
+                security_max_age,
+                compact=not detail or path.endswith("/homepage"),
+            )
+            if path == "/api/v1/summary":
                 self._json(200, _summary(snapshot))
             elif path == "/api/v1/services":
                 self._json(
@@ -671,7 +687,26 @@ def make_handler(
 def create_server(
     store: Store, host: str, port: int, release_max_age=43200, security_max_age=172800
 ) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer(
+    class BoundedServer(ThreadingHTTPServer):
+        def __init__(self, *args, **kwargs):
+            self.request_slots = BoundedSemaphore(4)
+            super().__init__(*args, **kwargs)
+
+        def process_request(self, request, client_address):
+            self.request_slots.acquire()
+            try:
+                super().process_request(request, client_address)
+            except BaseException:
+                self.request_slots.release()
+                raise
+
+        def process_request_thread(self, request, client_address):
+            try:
+                super().process_request_thread(request, client_address)
+            finally:
+                self.request_slots.release()
+
+    return BoundedServer(
         (host, port),
         make_handler(
             store, release_max_age=release_max_age, security_max_age=security_max_age

@@ -1,9 +1,12 @@
 """Project persisted evidence into a current, read-only freshness view."""
 
-import copy
 from datetime import datetime, timezone
 
-from service_health.aggregation import aggregate_security
+from service_health.aggregation import (
+    aggregate_security,
+    coverage_state,
+    security_status,
+)
 
 
 def _expired(value, now, limit):
@@ -16,12 +19,53 @@ def _expired(value, now, limit):
     return (now - checked.astimezone(timezone.utc)).total_seconds() > limit
 
 
-def project(snapshot, jobs, clock, release_max_age=43200, security_max_age=172800):
+def _compact_security(service):
+    """Recalculate coverage without discarding stored finding counts."""
+    components = service.get("components", [])
+    for component in components:
+        complete = (
+            component.get("scan_coverage") == "complete"
+            and component.get("advisory_coverage") == "complete"
+        )
+        component["coverage_complete"] = complete
+        component["security_status"] = security_status(
+            component.get("confirmed_finding_count", 0),
+            component.get("scan_coverage"),
+            component.get("advisory_coverage"),
+            complete,
+        )
+    for name in ("scan", "advisory"):
+        service[f"{name}_coverage"] = coverage_state(
+            [component.get(f"{name}_coverage") for component in components]
+        )
+    service["coverage_complete"] = bool(components) and all(
+        component["coverage_complete"] for component in components
+    )
+    service["advisory_stale"] = any(
+        component.get("advisory_stale", False) for component in components
+    )
+    service["security_status"] = security_status(
+        service.get("confirmed_finding_count", 0),
+        service["scan_coverage"],
+        service["advisory_coverage"],
+        service["coverage_complete"],
+    )
+
+
+def project(
+    snapshot,
+    jobs,
+    clock,
+    release_max_age=43200,
+    security_max_age=172800,
+    compact=False,
+):
     """Never write age changes to SQLite; a later success can clear them."""
     if snapshot is None:
         return {"checked_at": None, "services": [], "jobs": jobs, "empty": True}
     now = clock().astimezone(timezone.utc)
-    view = copy.deepcopy(snapshot)
+    # Store reads return fresh objects; projecting them does not mutate SQLite.
+    view = snapshot
     view["jobs"] = jobs
     release_error = jobs.get("release", {}).get("error")
     security_error = jobs.get("security", {}).get("error")
@@ -166,7 +210,10 @@ def project(snapshot, jobs, clock, release_max_age=43200, security_max_age=17280
         )
         service["image_stale"] = any(c.get("image_stale", False) for c in components)
         service["scan_stale"] = any(c.get("scan_stale", False) for c in components)
-        aggregate_security(service)
+        if compact:
+            _compact_security(service)
+        else:
+            aggregate_security(service)
         service["stale"] = any(
             service.get(name, False)
             for name in (

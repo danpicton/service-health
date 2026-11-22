@@ -48,9 +48,16 @@ and failure wording. HTTP requests only read SQLite and calculate expiry from
 timestamps; they never invoke a collector or modify the cached snapshot.
 
 The legacy one-shot commands and `--scans-scheduled` remain available. Inventory
-refresh takes the same collection lock and retains evidence only for unchanged
-component/deployment identities; see [inventory](inventory.md). A failed
-inventory refresh marks the retained inventory stale immediately. The unified
+refresh takes a separate short-lived `.inventory.lock` commit slot and observes
+Kubernetes only after acquiring it. It waits up to 120 seconds, then records a
+visible inventory job error and leaves the prior snapshot intact. The worker
+keeps `.collection.lock` across its cycle to prevent overlapping jobs, but takes
+`.inventory.lock` only while publishing progress and final results. If pod
+identity changes during a scan, the worker retains only matching evidence,
+records a retryable job error, and never restores the old deployment identity.
+Inventory retains evidence only for unchanged component/deployment identities;
+see [inventory](inventory.md). A failed inventory refresh marks the retained
+inventory stale immediately. The unified
 `--scheduled` worker should replace separate scanner scheduling in a new
 deployment to avoid duplicate scan work. Inventory remains a separate one-shot
 input; recurring refresh should be arranged by the infrastructure agent.

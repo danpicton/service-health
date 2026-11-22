@@ -19,33 +19,6 @@
       "release_source_url": "https://example.org/releases/1.1.0",
       "scan_coverage": "complete",
       "advisory_coverage": "complete",
-      "advisory_findings": [
-        {
-          "id": "GHSA-aaaa-bbbb-cccc",
-          "aliases": [
-            "CVE-2026-0001"
-          ],
-          "match": "confirmed",
-          "severity": "high",
-          "source": "OSV upstream advisory",
-          "current_version": "1.0.0",
-          "fixed_versions": [
-            "1.1.0"
-          ],
-          "provenance": [
-            {
-              "id": "GHSA-aaaa-bbbb-cccc",
-              "url": "https://osv.dev/vulnerability/GHSA-aaaa-bbbb-cccc",
-              "affected_ranges": [
-                {
-                  "introduced": "0",
-                  "fixed": "1.1.0"
-                }
-              ]
-            }
-          ]
-        }
-      ],
       "deployments": [
         {
           "namespace": "fictional",
@@ -60,97 +33,13 @@
           "state": "observed",
           "image_status": "up to date",
           "scan_coverage": "complete",
-          "scan_findings": [
-            {
-              "id": "CVE-2026-0001",
-              "severity": "high",
-              "package": "libexample",
-              "installed_version": "1.0",
-              "fixed_version": "1.1",
-              "source": "Trivy",
-              "source_url": "https://example.org/CVE-2026-0001",
-              "target": "fixture",
-              "digest": "sha256:abc",
-              "platform": "linux/amd64"
-            }
-          ],
           "scan_checked_at": "2026-11-22T12:00:00Z"
-        }
-      ],
-      "scan_findings": [
-        {
-          "id": "CVE-2026-0001",
-          "severity": "high",
-          "package": "libexample",
-          "installed_version": "1.0",
-          "fixed_version": "1.1",
-          "source": "Trivy",
-          "source_url": "https://example.org/CVE-2026-0001",
-          "target": "fixture",
-          "digest": "sha256:abc",
-          "platform": "linux/amd64"
-        }
-      ],
-      "confirmed_findings": [
-        {
-          "id": "CVE-2026-0001",
-          "aliases": [
-            "CVE-2026-0001",
-            "GHSA-aaaa-bbbb-cccc"
-          ],
-          "component_id": "app",
-          "severity": "high",
-          "fix_available": true,
-          "sources": [
-            {
-              "type": "Trivy",
-              "finding": {
-                "id": "CVE-2026-0001",
-                "severity": "high",
-                "package": "libexample",
-                "installed_version": "1.0",
-                "fixed_version": "1.1",
-                "source": "Trivy",
-                "source_url": "https://example.org/CVE-2026-0001",
-                "target": "fixture",
-                "digest": "sha256:abc",
-                "platform": "linux/amd64"
-              }
-            },
-            {
-              "type": "upstream advisory",
-              "finding": {
-                "id": "GHSA-aaaa-bbbb-cccc",
-                "aliases": [
-                  "CVE-2026-0001"
-                ],
-                "match": "confirmed",
-                "severity": "high",
-                "source": "OSV upstream advisory",
-                "current_version": "1.0.0",
-                "fixed_versions": [
-                  "1.1.0"
-                ],
-                "provenance": [
-                  {
-                    "id": "GHSA-aaaa-bbbb-cccc",
-                    "url": "https://osv.dev/vulnerability/GHSA-aaaa-bbbb-cccc",
-                    "affected_ranges": [
-                      {
-                        "introduced": "0",
-                        "fixed": "1.1.0"
-                      }
-                    ]
-                  }
-                ]
-              }
-            }
-          ]
         }
       ],
       "possible_finding_count": 0,
       "coverage_complete": true,
-      "security_status": "findings"
+      "security_status": "findings",
+      "confirmed_finding_count": 1
     },
     {
       "id": "database",
@@ -162,13 +51,11 @@
       "scan_coverage": "missing",
       "advisory_coverage": "missing",
       "advisory_gap": "no supported source",
-      "advisory_findings": [],
-      "scan_findings": [],
       "deployments": [],
-      "confirmed_findings": [],
       "possible_finding_count": 0,
       "coverage_complete": false,
-      "security_status": "incomplete coverage"
+      "security_status": "incomplete coverage",
+      "confirmed_finding_count": 0
     }
   ],
   "current_version": null,
