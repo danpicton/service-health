@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from service_health.advisories import apply_advisory_checks
+from service_health.github_cache import GitHubReleases
 from service_health.images import apply_image_checks
 from service_health.releases import apply_release_checks
 from service_health.scanner import apply_scan_checks
@@ -24,6 +25,7 @@ def run_job(
     external_reports=None,
     scan_workers=2,
     clock=lambda: datetime.now(timezone.utc),
+    github_token_file=None,
 ):
     """Run one cycle. A failed cycle retains the last committed snapshot."""
     if name not in ("release", "security"):
@@ -32,23 +34,44 @@ def run_job(
     with lock_path.open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         attempted = _stamp(clock)
+        previous = store.read_jobs().get(name, {})
+        retry_failed = bool(
+            previous.get("error") and "provider checks failed" in previous["error"]
+        )
+        scan_retry = retry_failed or previous.get("state") in ("running", "interrupted")
+        store.start_job(name, attempted)
         try:
             snapshot = store.read()
             if snapshot is None:
                 raise ValueError("collection requires a cached inventory")
             catalog = json.loads(Path(catalog_path).read_text())
             if name == "release":
+                releases = GitHubReleases(store, github_token_file, clock)
                 services = apply_release_checks(
-                    snapshot["services"], catalog, clock=clock
+                    snapshot["services"],
+                    catalog,
+                    fetch_releases=releases,
+                    clock=clock,
+                    only_failed=retry_failed,
                 )
-                services = apply_image_checks(services, clock=clock)
+                services = apply_image_checks(
+                    services, clock=clock, only_failed=retry_failed
+                )
             else:
                 if scanner is None:
                     raise ValueError("security job requires a scanner")
                 services = apply_scan_checks(
-                    snapshot["services"], scanner, clock, scan_workers, external_reports
+                    snapshot["services"],
+                    scanner,
+                    clock,
+                    scan_workers,
+                    external_reports,
+                    progress=lambda partial: store.replace(_stamp(clock), partial),
+                    only_failed=scan_retry,
                 )
-                services = apply_advisory_checks(services, catalog, clock=clock)
+                services = apply_advisory_checks(
+                    services, catalog, clock=clock, only_failed=scan_retry
+                )
             store.replace(attempted, services)
             failed = (
                 any(
@@ -92,6 +115,7 @@ def run_schedule(
     clock=lambda: datetime.now(timezone.utc),
     sleep=time.sleep,
     stop=lambda: False,
+    github_token_file=None,
 ):
     """Run due jobs serially; failures back off exponentially per job."""
     if min(release_interval, security_interval, retry_initial, retry_max) < 1:
@@ -103,7 +127,9 @@ def run_schedule(
     next_run = {}
     for name in intervals:
         state = jobs.get(name)
-        if state and state["attempted_at"]:
+        if state and state["state"] == "interrupted":
+            next_run[name] = 0
+        elif state and state["attempted_at"]:
             attempted = datetime.fromisoformat(
                 state["attempted_at"].replace("Z", "+00:00")
             )
@@ -133,6 +159,7 @@ def run_schedule(
                     external_reports,
                     scan_workers,
                     clock,
+                    github_token_file,
                 )
             except BlockingIOError:
                 next_run[name] = clock().timestamp() + retry_initial

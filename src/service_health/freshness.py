@@ -25,6 +25,10 @@ def project(snapshot, jobs, clock, release_max_age=43200, security_max_age=17280
     view["jobs"] = jobs
     release_error = jobs.get("release", {}).get("error")
     security_error = jobs.get("security", {}).get("error")
+    if jobs.get("release", {}).get("state") == "interrupted":
+        release_error = None
+    if jobs.get("security", {}).get("state") == "interrupted":
+        security_error = None
     inventory_error = jobs.get("inventory", {}).get("error")
     if release_error and "one or more provider checks failed" in release_error:
         release_error = None

@@ -15,12 +15,16 @@
             mappings:
               - field: update_status
                 label: Application update
+              - field: update_reason
+                label: Update reason
               - field: current_version
                 label: Current version
               - field: candidate_version
                 label: Candidate version
               - field: image_status
                 label: Image rebuild
+              - field: image_reason
+                label: Image reason
               - field: update_coverage_complete
                 label: Update coverage complete
               - field: stale
@@ -32,6 +36,8 @@
             mappings:
               - field: security_status
                 label: Security
+              - field: security_reason
+                label: Coverage reason
               - field: critical_count
                 label: Critical findings
                 format: number

@@ -130,6 +130,14 @@ def _summary(snapshot: dict | None) -> dict:
 
 
 def _homepage(service: dict, checked_at: str | None) -> dict:
+    components = service.get("components", [])
+    deployments = [
+        d for component in components for d in component.get("deployments", [])
+    ]
+
+    def first(values):
+        return next((value for value in values if value), None)
+
     return {
         "id": service["id"],
         "detail_path": "/services/" + quote(service["id"], safe=""),
@@ -141,8 +149,14 @@ def _homepage(service: dict, checked_at: str | None) -> dict:
         "current_version": service.get("current_version"),
         "candidate_version": service.get("candidate_version"),
         "update_status": service.get("update_status", "unknown"),
+        "update_reason": first(
+            c.get("release_error") or c.get("update_reason") for c in components
+        ),
         "update_kind": service.get("update_kind"),
         "image_status": service.get("image_status", "unknown"),
+        "image_reason": first(
+            d.get("image_reason") or d.get("image_error") for d in deployments
+        ),
         "candidate_image_digest": service.get("candidate_image_digest"),
         "image_coverage_complete": service.get("image_coverage_complete", False),
         "image_checked_at": service.get("image_checked_at"),
@@ -152,6 +166,12 @@ def _homepage(service: dict, checked_at: str | None) -> dict:
             for component in service.get("components", [])
             for deployment in component.get("deployments", [])
             if deployment.get("image_error")
+        ],
+        "image_reasons": [
+            deployment["image_reason"]
+            for component in service.get("components", [])
+            for deployment in component.get("deployments", [])
+            if deployment.get("image_reason")
         ],
         "update_coverage_complete": service.get("update_coverage_complete", False),
         "release_stale": service.get("release_stale", False),
@@ -169,7 +189,16 @@ def _homepage(service: dict, checked_at: str | None) -> dict:
             for component in service.get("components", [])
             if component.get("release_error")
         ],
+        "update_reasons": [
+            component["update_reason"]
+            for component in service.get("components", [])
+            if component.get("update_reason")
+        ],
         "security_status": service.get("security_status", "incomplete coverage"),
+        "security_reason": first(
+            [d.get("scan_error") for d in deployments]
+            + [c.get("advisory_error") or c.get("advisory_gap") for c in components]
+        ),
         "scan_coverage": service.get("scan_coverage", "missing"),
         "scan_sources": service.get("scan_sources", []),
         "scan_checked_at": service.get("scan_checked_at"),
@@ -187,6 +216,11 @@ def _homepage(service: dict, checked_at: str | None) -> dict:
             component["advisory_error"]
             for component in service.get("components", [])
             if component.get("advisory_error")
+        ],
+        "advisory_gaps": [
+            component["advisory_gap"]
+            for component in service.get("components", [])
+            if component.get("advisory_gap")
         ],
         "possible_finding_count": service.get("possible_finding_count", 0),
         "confirmed_finding_count": service.get("confirmed_finding_count", 0),
@@ -223,7 +257,15 @@ def _page(snapshot: dict | None, service: dict | None = None) -> str:
             )
         for name in ("release", "security"):
             job = snapshot.get("jobs", {}).get(name, {}) if snapshot else {}
-            if job.get("error"):
+            if job.get("state") in ("running", "interrupted"):
+                parts.append(
+                    "<p>"
+                    + html.escape(name)
+                    + " job "
+                    + html.escape(job["state"])
+                    + ".</p>"
+                )
+            if job.get("error") and job.get("state") != "interrupted":
                 parts.append(
                     "<p>"
                     + html.escape(name)
@@ -282,7 +324,15 @@ def _page(snapshot: dict | None, service: dict | None = None) -> str:
             "Services have not been assessed.</p>"
         )
         for name, job in snapshot.get("jobs", {}).items() if snapshot else []:
-            if job.get("error"):
+            if job.get("state") in ("running", "interrupted"):
+                parts.append(
+                    "<p>"
+                    + html.escape(name)
+                    + " job "
+                    + html.escape(job["state"])
+                    + ".</p>"
+                )
+            if job.get("error") and job.get("state") != "interrupted":
                 parts.append(
                     "<p>"
                     + html.escape(name)
@@ -299,7 +349,15 @@ def _page(snapshot: dict | None, service: dict | None = None) -> str:
         if summary["stale"]:
             parts.append("<p>Some previous results are stale.</p>")
         for name, job in summary["jobs"].items():
-            if job.get("error"):
+            if job.get("state") in ("running", "interrupted"):
+                parts.append(
+                    "<p>"
+                    + html.escape(name)
+                    + " job "
+                    + html.escape(job["state"])
+                    + ".</p>"
+                )
+            if job.get("error") and job.get("state") != "interrupted":
                 parts.append(
                     "<p>"
                     + html.escape(name)

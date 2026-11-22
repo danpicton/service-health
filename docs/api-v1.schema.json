@@ -18,7 +18,8 @@
         "attempted_at": { "$ref": "#/$defs/timestamp" },
         "succeeded_at": { "$ref": "#/$defs/timestamp" },
         "error": { "$ref": "#/$defs/nullableString" },
-        "failures": { "type": "integer", "minimum": 0 }
+        "failures": { "type": "integer", "minimum": 0 },
+        "state": { "enum": ["running", "interrupted", "completed"] }
       }
     },
     "summary": {
@@ -193,9 +194,15 @@
         "image_coverage_complete": { "type": "boolean" },
         "image_checked_at": { "$ref": "#/$defs/timestamp" }, "image_stale": { "type": "boolean" },
         "image_errors": { "type": "array", "items": { "type": "string" } },
+        "image_reasons": { "type": "array", "items": { "type": "string" } },
+        "image_reason": { "$ref": "#/$defs/nullableString" },
         "update_coverage_complete": { "type": "boolean" },
         "release_stale": { "type": "boolean" }, "release_checked_at": { "$ref": "#/$defs/timestamp" },
         "release_errors": { "type": "array", "items": { "type": "string" } },
+        "update_reasons": { "type": "array", "items": { "type": "string" } },
+        "update_reason": { "$ref": "#/$defs/nullableString" },
+        "security_reason": { "$ref": "#/$defs/nullableString" },
+        "advisory_gaps": { "type": "array", "items": { "type": "string" } },
         "security_status": { "$ref": "#/$defs/securityStatus" },
         "scan_coverage": { "$ref": "#/$defs/coverage" },
         "scan_sources": { "type": "array", "items": { "type": "string" } },

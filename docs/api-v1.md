@@ -48,6 +48,15 @@ success has no retained stale evidence, but its status and error still show the
 failure. A zero finding count with incomplete or failed coverage is **not** a
 clean assessment.
 
+`jobs.*.state` is an additive v1 field: `running` means the worker holds the
+collection lock and has started the job; `interrupted` means a prior running
+worker lost that lock before completion; `completed` includes both successful
+and failed finished attempts. During security collection, validated scans are
+committed individually. `checked_at` can therefore advance before the job is
+complete. Check `jobs.security.state`, per-deployment coverage, and the four
+successful-check timestamps before interpreting a partial result. HTTP routes
+only read this state and never trigger collection.
+
 | Field | Values and interpretation |
 | --- | --- |
 | `update_status` | `update available`, `up to date`, `unknown`, `check failed` |
@@ -83,6 +92,14 @@ The detail-page route must be reachable from the viewer's browser.
 Homepage may render a `null` version as an empty value; map the accompanying
 status and coverage fields so an empty version never reads as “up to date” or
 “no known findings.”
+The additive scalar `update_reason`, `image_reason`, and `security_reason`
+fields show one actionable cause for a widget; `update_reasons`,
+`image_reasons`, `advisory_gaps`, and the existing error arrays preserve all
+component/deployment causes. Examples include GitHub rate limited with a
+retry time, GitHub authentication required, missing verified application
+version, private registry authentication required, unsupported local image,
+and missing structured advisory mapping. These reasons do not change the
+existing v1 status enums; unknown and incomplete remain distinct from clean.
 
 ## Homepage v1.10.1 integration example
 
