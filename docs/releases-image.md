@@ -2,12 +2,12 @@
 
 ## First public publication
 
-The intended source repository is `github.com/danpicton/service-health`, and
-the image target in the workflow is `ghcr.io/danpicton/service-health`. Keep
-those two names aligned. GitHub provides standard hosted Actions runners at no
-charge for public repositories. A public GHCR package allows the cluster to
-pull the image without registry credentials. Repository and package visibility
-are separate settings.
+The intended public source repository is `github.com/danpicton/service-health`,
+and the private image target in the workflow is
+`ghcr.io/danpicton/service-health`. Keep those two names aligned. GitHub
+provides standard hosted Actions runners at no charge for public repositories.
+The private GHCR package requires registry authentication for pulls; repository
+and package visibility are separate settings.
 
 Before creating the repository, review the files that Git would publish. This
 checkout may not yet contain Git history; initialize it only if `git status`
@@ -27,18 +27,18 @@ and its Actions checks are verified, publish a reviewed commit with a stable
 version tag that matches `pyproject.toml`:
 
 ```sh
-git tag v0.1.0
+git tag -a v0.1.0 -m "v0.1.0"
 git push origin v0.1.0
 ```
 
 The release job builds and pushes the image, then records its immutable digest
 in the run summary. GHCR initially creates a personal-account package as
-**private**, even when the source repository is public. After the first release,
-open the `service-health` package on the `danpicton` GitHub profile, then use
-**Package settings → Danger Zone → Change visibility → Public**. Check that
-the package is public and anonymously pullable before selecting its digest in
-the infrastructure repository. GitHub states that a public package cannot be
-made private again; review the image contents and build metadata first.
+**private**, even when the source repository is public. Keep that default and
+confirm package settings still show **Private** after the first release. The
+infrastructure deployment must use an operator-managed image pull credential
+with `read:packages` access. Verify an authenticated pull by digest before
+selecting that digest in the infrastructure repository. Do not put the pull
+credential in this repository, its workflow, or the image.
 
 Do not add actual hostnames, runtime catalogs, scanner reports, caches, or
 credentials to this repository or image. They are supplied by the separate
@@ -91,12 +91,12 @@ rollback; a database migration may also require restoring a compatible SQLite
 backup. Publishing an image does not deploy it.
 
 Repository visibility and GHCR package visibility are separate operator
-decisions. A public GHCR package allows anonymous pulls and is the simple
-option for the home server. A private package needs operator-provisioned image
-pull authentication in the infrastructure repository. Inspect both settings
-before release; this workflow changes neither setting. The package can inherit
-repository access permissions when linked by the OCI source label, subject to
-the owner's package settings, but this does not make package visibility public.
+decisions. This setup uses a public repository for Actions and a private GHCR
+package. The infrastructure repository must provision image pull authentication
+for the server. Inspect both settings before release; this workflow changes
+neither setting. The package can inherit repository access permissions when
+linked by the OCI source label, subject to the owner's package settings, but
+this does not make package visibility public.
 
 References: [GitHub package permissions](https://docs.github.com/en/packages/managing-github-packages-using-github-actions-workflows/publishing-and-installing-a-package-with-github-actions),
 [GHCR visibility and access](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility),
