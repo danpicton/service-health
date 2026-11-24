@@ -1,0 +1,10 @@
+{
+  "SchemaVersion": 2,
+  "Trivy": {"Version": "0.76.2"},
+  "ArtifactType": "container_image",
+  "ArtifactName": "docker.io/library/busybox@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4",
+  "Metadata": {
+    "ImageConfig": {"os": "linux", "architecture": "amd64"},
+    "RepoDigests": ["busybox@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4"]
+  }
+}

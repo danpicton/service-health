@@ -6,6 +6,7 @@ from unittest.mock import patch
 from test_cached_http import HttpHarness, _MemorySocket
 
 from service_health.http import make_handler
+from service_health.inventory_refresh import refresh_inventory
 from service_health.schedule import run_job, run_schedule
 from service_health.store import Store
 
@@ -102,6 +103,35 @@ class FreshnessTest(HttpHarness):
         self.assertTrue(expired["release_stale"])
         self.assertFalse(expired["coverage_complete"])
 
+    def test_expired_inventory_moves_available_image_update_to_history(self):
+        self.seed()
+        services = self.store.read()["services"]
+        component = services[0]["components"][0]
+        deployment = component["deployments"][0]
+        for record in (services[0], component, deployment):
+            record["image_status"] = "image update available"
+        deployment.update(
+            application_version="1.0.0",
+            candidate_application_version="1.0.0",
+            image_update_kind="verified rebuild",
+        )
+        self.store.replace(self.now.isoformat(), services)
+        observed_at = self.now - timedelta(hours=3)
+        self.store.record_job("inventory", observed_at.isoformat(), None)
+
+        home = self.get_json("/api/v1/services/app/homepage")[1]
+        component = home["components"][0]
+        deployment = component["deployments"][0]
+        for record in (home, component, deployment):
+            self.assertEqual(record["image_status"], "unknown")
+            self.assertTrue(record["image_stale"])
+        self.assertIsNone(deployment["image_update_kind"])
+        self.assertEqual(
+            deployment["image_update_history"]["image_update_kind"], "verified rebuild"
+        )
+        summary = self.get_json("/api/v1/summary")[1]
+        self.assertEqual(summary["image_counts"]["image update available"], 0)
+
     def test_first_failure_stays_unassessed_and_reads_do_not_collect(self):
         self.seed()
         services = self.store.read()["services"]
@@ -120,6 +150,52 @@ class FreshnessTest(HttpHarness):
         self.assertEqual(home["security_status"], "check failed")
         self.assertFalse(home["scan_stale"])
         self.assertFalse(home["coverage_complete"])
+
+    def test_recent_checks_do_not_make_expired_inventory_current(self):
+        self.seed()
+        observed_at = self.now - timedelta(hours=2)
+        self.store.record_job("inventory", observed_at.isoformat(), None)
+        _, current = self.get_json("/api/v1/services/app/homepage")
+        self.assertEqual(current["update_status"], "up to date")
+        self.assertEqual(current["security_status"], "no known findings")
+
+        self.now += timedelta(seconds=1)
+        _, home = self.get_json("/api/v1/services/app/homepage")
+        _, summary = self.get_json("/api/v1/summary")
+        _, page = self.get("/services/app")
+        self.assertEqual(home["inventory_status"], "unknown")
+        self.assertTrue(home["inventory_stale"])
+        self.assertIsNone(home["inventory_error"])
+        self.assertEqual(home["update_status"], "unknown")
+        self.assertEqual(home["security_status"], "incomplete coverage")
+        self.assertFalse(home["coverage_complete"])
+        self.assertEqual(
+            summary["jobs"]["inventory"]["succeeded_at"], observed_at.isoformat()
+        )
+        self.assertTrue(summary["stale"])
+        self.assertIn("Inventory observation expired", page)
+
+    def test_new_inventory_success_cannot_freshen_older_cached_rows(self):
+        self.seed()
+        observed_at = self.now - timedelta(hours=3)
+        self.store.record_job("inventory", observed_at.isoformat(), None)
+        writer = Store(self.database)
+        refreshed = writer.read()["services"]
+        refreshed[0]["components"][0]["deployments"] = []
+        now = self.now
+
+        class InterleavedStore(Store):
+            def read_service(self, service_id, compact=False):
+                snapshot = super().read_service(service_id, compact)
+                refresh_inventory(writer, lambda: refreshed, lambda: now)
+                return snapshot
+
+        self.store = InterleavedStore(self.database)
+        status, home = self.get_json("/api/v1/services/app/homepage")
+        self.assertEqual(status, 200)
+        self.assertTrue(home["inventory_stale"])
+        self.assertEqual(home["update_status"], "unknown")
+        self.assertEqual(home["security_status"], "incomplete coverage")
 
     def test_failure_before_inventory_is_visible_with_empty_cache(self):
         self.store.record_job("release", self.now.isoformat(), "inventory unavailable")

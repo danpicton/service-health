@@ -49,6 +49,11 @@ class HttpHarness(unittest.TestCase):
 
 
 class CachedHttpTest(HttpHarness):
+    def test_unusable_cache_is_not_ready(self) -> None:
+        self.database.write_bytes(b"unreadable SQLite database")
+        self.assertEqual(self.get_json("/healthz"), (200, {"status": "alive"}))
+        self.assertEqual(self.get_json("/readyz"), (503, {"status": "unready"}))
+
     def test_empty_startup_is_ready_but_unassessed(self) -> None:
         self.assertEqual(self.get_json("/healthz"), (200, {"status": "alive"}))
         self.assertEqual(

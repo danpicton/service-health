@@ -8,7 +8,7 @@
   "update_coverage_complete": false,
   "image_status": "unknown",
   "image_counts": {
-    "image rebuild available": 0,
+    "image update available": 0,
     "up to date": 0,
     "unknown": 0,
     "check failed": 0

@@ -2,7 +2,9 @@
 
 import fcntl
 import json
+import sqlite3
 import threading
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -171,23 +173,48 @@ class InventoryRefreshTest(HttpHarness):
         self.assertEqual(self.store.read(), before)
         self.assertIn("lock wait", self.store.read_jobs()["inventory"]["error"])
 
+    def test_refresh_does_not_collect_after_its_deadline(self):
+        before = self.seed()
+        lock_path = Path(str(self.database) + ".inventory.lock")
+        ticks = [0.0]
+        with lock_path.open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+
+            def sleep(duration):
+                ticks[0] += duration + 1
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
+            with self.assertRaisesRegex(TimeoutError, "deadline"):
+                refresh_inventory(
+                    self.store,
+                    lambda: self.inventory(digest="b"),
+                    lambda: self.now + timedelta(minutes=1),
+                    wait_seconds=1,
+                    monotonic=lambda: ticks[0],
+                    sleep=sleep,
+                )
+        self.assertEqual(self.store.read()["checked_at"], before)
+
     def test_wait_retries_and_collects_after_lock_is_available(self):
         self.seed()
         lock_path = Path(str(self.database) + ".inventory.lock")
         ticks = [0.0]
         calls = []
+        current_digest = "a"
         with lock_path.open("w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
 
             def sleep(duration):
+                nonlocal current_digest
                 ticks[0] += duration
                 calls.append(duration)
                 if len(calls) == 6:
+                    current_digest = "b"
                     fcntl.flock(lock, fcntl.LOCK_UN)
 
             refresh_inventory(
                 self.store,
-                lambda: self.inventory(digest="b"),
+                lambda: self.inventory(digest=current_digest),
                 lambda: self.now + timedelta(minutes=1),
                 wait_seconds=2,
                 monotonic=lambda: ticks[0],
@@ -238,7 +265,7 @@ class InventoryRefreshTest(HttpHarness):
                     "Metadata": {
                         "ImageConfig": {"os": "linux", "architecture": "amd64"}
                     },
-                    "Results": [],
+                    "Results": [{"Target": "alpine", "Class": "os-pkgs"}],
                 }
 
         def scan_job():
@@ -286,6 +313,7 @@ class InventoryRefreshTest(HttpHarness):
 
     def test_failed_refresh_retains_snapshot_and_marks_inventory_stale(self):
         self.seed()
+        refresh_inventory(self.store, self.inventory, lambda: self.now)
         before = self.store.read()
 
         def fail():
@@ -302,5 +330,29 @@ class InventoryRefreshTest(HttpHarness):
         _, page = self.get("/services/app")
         self.assertEqual(home["inventory_status"], "check failed")
         self.assertTrue(home["inventory_stale"])
+        self.assertEqual(home["security_status"], "findings")
+        self.assertEqual(home["confirmed_finding_count"], 2)
+        self.assertFalse(home["coverage_complete"])
         self.assertTrue(summary["stale"])
         self.assertIn("inventory API offline", page)
+
+    def test_failed_success_write_does_not_publish_new_inventory(self):
+        self.seed()
+        refresh_inventory(self.store, self.inventory, lambda: self.now)
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute(
+                "CREATE TRIGGER reject_success BEFORE UPDATE ON jobs "
+                "WHEN NEW.name = 'inventory' AND NEW.error IS NULL "
+                "BEGIN SELECT RAISE(ABORT, 'success write failed'); END"
+            )
+        self.now += timedelta(minutes=1)
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "success write failed"):
+            refresh_inventory(
+                self.store, lambda: self.inventory(digest="b"), lambda: self.now
+            )
+        status, detail = self.get_json("/api/v1/services/app")
+        self.assertEqual(status, 200)
+        deployment = detail["components"][0]["deployments"][0]
+        self.assertEqual(deployment["digest"], "sha256:" + "a" * 64)
+        self.assertEqual(deployment["scan_coverage"], "complete")
+        self.assertEqual(detail["inventory_status"], "check failed")

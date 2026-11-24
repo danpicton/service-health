@@ -39,7 +39,13 @@ def representative_service() -> dict:
             {
                 "id": "GHSA-aaaa-bbbb-cccc",
                 "url": "https://osv.dev/vulnerability/GHSA-aaaa-bbbb-cccc",
-                "affected_ranges": [{"introduced": "0", "fixed": "1.1.0"}],
+                "affected_versions": [],
+                "affected_ranges": [
+                    {
+                        "type": "SEMVER",
+                        "events": [{"introduced": "0"}, {"fixed": "1.1.0"}],
+                    }
+                ],
             }
         ],
     }
@@ -65,12 +71,20 @@ def representative_service() -> dict:
                 "name": "Application",
                 "kind": "regular",
                 "current_version": "1.0.0",
-                "candidate_version": "1.1.0",
+                "candidate_version": "2.0.0",
+                "release_candidates": {
+                    group: {
+                        "version": version,
+                        "normalized_version": version,
+                        "source_url": "https://example.org/releases/" + version,
+                    }
+                    for group, version in (("routine", "1.1.0"), ("major", "2.0.0"))
+                },
                 "update_status": "update available",
-                "update_kind": "minor",
+                "update_kind": "major migration",
                 "release_checked_at": CHECKED,
                 "release_stale": False,
-                "release_source_url": "https://example.org/releases/1.1.0",
+                "release_source_url": "https://example.org/releases/2.0.0",
                 "scan_coverage": "complete",
                 "advisory_coverage": "complete",
                 "advisory_findings": [advisory_finding],
@@ -82,6 +96,26 @@ def representative_service() -> dict:
                         "container": "app",
                         "kind": "regular",
                         "image": "example/app:1.0.0",
+                        "version_observations": [
+                            {
+                                "source": {
+                                    "type": "exact_tag",
+                                    "repository": "example/app",
+                                    "documentation": "https://example.org/app/image-tags",
+                                },
+                                "scope": "deployment",
+                                "reported": "1.0.0",
+                                "normalized": "1.0.0",
+                                "checked_at": CHECKED,
+                                "reason": None,
+                                "outcome": "success",
+                                "last_success": {
+                                    "reported": "1.0.0",
+                                    "normalized": "1.0.0",
+                                    "checked_at": CHECKED,
+                                },
+                            }
+                        ],
                         "image_id": "example/app@sha256:abc",
                         "digest": "sha256:abc",
                         "platform": "linux/amd64",
@@ -139,6 +173,19 @@ def request(store: Store, path: str) -> tuple[int, str]:
 
 
 class ApiContractTest(unittest.TestCase):
+    def test_homepage_service_id_keeps_findings_in_detail_views(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / "state.db")
+            store.replace(CHECKED, [{**representative_service(), "id": "homepage"}])
+            for route in ("/api/v1/services/homepage", "/services/homepage"):
+                with self.subTest(route=route):
+                    status, detail = request(store, route)
+                    self.assertEqual(status, 200)
+                    self.assertIn("CVE-2026-0001", detail)
+            status, homepage = request(store, "/api/v1/services/homepage/homepage")
+            self.assertEqual(status, 200)
+            self.assertNotIn("CVE-2026-0001", homepage)
+
     def test_dashboard_reads_omit_findings_but_detail_keeps_them(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / "state.db")

@@ -264,7 +264,7 @@ class RecoveryTests(unittest.TestCase):
                     "Metadata": {
                         "ImageConfig": {"os": "linux", "architecture": "amd64"}
                     },
-                    "Results": [],
+                    "Results": [{"Target": "alpine", "Class": "os-pkgs"}],
                 }
 
         def stop_after_one(partial):
@@ -333,14 +333,14 @@ class RecoveryTests(unittest.TestCase):
                     "Metadata": {
                         "ImageConfig": {"os": "linux", "architecture": "amd64"}
                     },
-                    "Results": [],
+                    "Results": [{"Target": "alpine", "Class": "os-pkgs"}],
                 }
 
         scanner = Scanner()
         run_job(self.store, "security", catalog, scanner=scanner, clock=lambda: NOW)
         self.assertEqual(len(scanner.targets), 1)
         self.assertIn("/two@", scanner.targets[0])
-        self.assertEqual(self.store.read_jobs()["security"]["state"], "completed")
+        self.assertEqual(self.store.read_jobs()["security"]["state"], "partial")
 
 
 if __name__ == "__main__":

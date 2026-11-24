@@ -86,7 +86,7 @@ class ImageTest(HttpHarness):
             self.get("/services/app")[1],
         )
 
-    def test_same_tag_rebuild_is_separate_from_application_release(self):
+    def test_same_tag_content_update_is_separate_from_application_release(self):
         registry = Registry(
             {
                 "latest": index(digest("c"), digest("b")),
@@ -94,7 +94,7 @@ class ImageTest(HttpHarness):
             }
         )
         homepage, detail, page = self.check("example.org/app:latest", registry)
-        self.assertEqual(homepage["image_status"], "image rebuild available")
+        self.assertEqual(homepage["image_status"], "image update available")
         self.assertEqual(homepage["candidate_image_digest"], digest("b"))
         self.assertEqual(homepage["update_status"], "up to date")
         self.assertEqual(homepage["candidate_version"], "1.0.0")
@@ -103,15 +103,36 @@ class ImageTest(HttpHarness):
             detail["components"][0]["deployments"][0]["deployed_platform_digest"],
             digest("d"),
         )
-        self.assertIn("image rebuild available", page)
+        self.assertIn("image update available", page)
         self.assertIn(digest("b"), page)
         self.assertEqual(
             self.get_json("/api/v1/summary")[1]["image_counts"][
-                "image rebuild available"
+                "image update available"
             ],
             1,
         )
         self.assertEqual(len(registry.calls), 2)
+
+    def test_legacy_cache_reads_as_generic_update(self):
+        services = service("example.org/app:latest")
+        component = services[0]["components"][0]
+        for record in (services[0], component, component["deployments"][0]):
+            record["image_status"] = "image rebuild available"
+        self.store.replace("2026-11-22T00:00:00Z", services)
+        self.assertEqual(
+            self.store.read()["services"][0]["image_status"], "image update available"
+        )
+        self.assertEqual(
+            self.get_json("/api/v1/summary")[1]["image_counts"][
+                "image update available"
+            ],
+            1,
+        )
+        home = self.get_json("/api/v1/services/app/homepage")[1]
+        self.assertEqual(home["image_status"], "image update available")
+        page = self.get("/services/app")[1]
+        self.assertIn("image update available", page)
+        self.assertNotIn("rebuild", page)
 
     def test_index_and_manifest_representation_is_unchanged(self):
         registry = Registry(
@@ -140,6 +161,33 @@ class ImageTest(HttpHarness):
         self.assertIn(
             "mutable tag", detail["components"][0]["deployments"][0]["image_reason"]
         )
+
+    def test_running_variant_selects_candidate_from_index(self):
+        entries = []
+        for variant, candidate in (("v6", digest("b")), ("v7", digest("d"))):
+            entries.append(
+                {
+                    "mediaType": MANIFEST,
+                    "digest": candidate,
+                    "platform": {
+                        "os": "linux",
+                        "architecture": "arm",
+                        "variant": variant,
+                    },
+                }
+            )
+        registry = Registry(
+            {
+                "latest": (digest("c"), {"mediaType": INDEX, "manifests": entries}),
+                digest("a"): manifest(digest("a")),
+            },
+            {digest("f"): {"os": "linux", "architecture": "arm", "variant": "v7"}},
+        )
+        home, _, _ = self.check(
+            "registry.example/app:latest", registry, platform="linux/arm"
+        )
+        self.assertEqual(home["image_status"], "image update available")
+        self.assertEqual(home["candidate_image_digest"], digest("d"))
 
     def test_ambiguous_platform_and_registry_failure(self):
         ambiguous = Registry(

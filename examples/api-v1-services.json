@@ -24,12 +24,24 @@
           "name": "Application",
           "kind": "regular",
           "current_version": "1.0.0",
-          "candidate_version": "1.1.0",
+          "candidate_version": "2.0.0",
+          "release_candidates": {
+            "routine": {
+              "version": "1.1.0",
+              "normalized_version": "1.1.0",
+              "source_url": "https://example.org/releases/1.1.0"
+            },
+            "major": {
+              "version": "2.0.0",
+              "normalized_version": "2.0.0",
+              "source_url": "https://example.org/releases/2.0.0"
+            }
+          },
           "update_status": "update available",
-          "update_kind": "minor",
+          "update_kind": "major migration",
           "release_checked_at": "2026-11-22T12:00:00Z",
           "release_stale": false,
-          "release_source_url": "https://example.org/releases/1.1.0",
+          "release_source_url": "https://example.org/releases/2.0.0",
           "scan_coverage": "complete",
           "advisory_coverage": "complete",
           "deployments": [
@@ -46,7 +58,27 @@
               "state": "observed",
               "image_status": "up to date",
               "scan_coverage": "complete",
-              "scan_checked_at": "2026-11-22T12:00:00Z"
+              "scan_checked_at": "2026-11-22T12:00:00Z",
+              "version_observations": [
+                {
+                  "source": {
+                    "type": "exact_tag",
+                    "repository": "example/app",
+                    "documentation": "https://example.org/app/image-tags"
+                  },
+                  "scope": "deployment",
+                  "reported": "1.0.0",
+                  "normalized": "1.0.0",
+                  "checked_at": "2026-11-22T12:00:00Z",
+                  "reason": null,
+                  "outcome": "success",
+                  "last_success": {
+                    "reported": "1.0.0",
+                    "normalized": "1.0.0",
+                    "checked_at": "2026-11-22T12:00:00Z"
+                  }
+                }
+              ]
             }
           ],
           "possible_finding_count": 0,

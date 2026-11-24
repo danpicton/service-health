@@ -8,7 +8,7 @@ from test_cached_http import HttpHarness
 from service_health.releases import apply_release_checks
 
 
-def catalog(version_policy="semver", track_prereleases=False):
+def catalog(version_policy="semver", track_prereleases=False, **release_rules):
     return [
         {
             "id": "app",
@@ -20,6 +20,7 @@ def catalog(version_policy="semver", track_prereleases=False):
                         "repository": "example/app",
                         "version_policy": version_policy,
                         "track_prereleases": track_prereleases,
+                        **release_rules,
                     },
                 }
             ],
@@ -121,6 +122,36 @@ class ReleaseTest(HttpHarness):
         home, _, _ = self.check("latest", [release("1.3.0")])
         self.assertEqual(home["update_status"], "unknown")
 
+    def test_numeric_project_lines_and_unclassified_releases(self):
+        releases = [release(tag) for tag in ("2026.11.10", "2026.12.1", "2026.11.2")]
+        home, component, page = self.check(
+            "2026.11.1", releases, version_policy="numeric", release_line_segments=2
+        )
+        self.assertEqual(home["update_status"], "update available")
+        groups = component["release_candidates"]
+        self.assertEqual(groups["routine"]["version"], "2026.11.10")
+        self.assertEqual(groups["major"]["version"], "2026.12.1")
+        self.assertIn("routine release", page)
+        home, component, page = self.check(
+            "2026.11.1", releases, version_policy="numeric"
+        )
+        self.assertEqual(home["update_kind"], "unclassified")
+        self.assertEqual(list(component["release_candidates"]), ["unclassified"])
+        self.assertIn("unclassified release", page)
+        home, component, _ = self.check("2027.1.0", releases, version_policy="numeric")
+        self.assertEqual(home["update_status"], "up to date")
+        self.assertEqual(component["release_candidates"], {})
+
+    def test_unknown_version_and_default_policy_do_not_classify_a_release(self):
+        _, component, _ = self.check(None, [release("1.1.0")])
+        self.assertEqual(list(component["release_candidates"]), ["unclassified"])
+        configured = catalog()
+        configured[0]["components"][0]["release_source"].pop("version_policy")
+        result = apply_release_checks(
+            service("1.0.0"), configured, lambda _: [release("1.2.0")]
+        )
+        self.assertEqual(result[0]["update_kind"], "unclassified")
+
     def test_service_prerelease_opt_in_and_missing_source(self):
         configured = catalog()
         configured[0]["track_prereleases"] = True
@@ -169,6 +200,8 @@ class ReleaseTest(HttpHarness):
         self.assertTrue(home["stale"])
         self.assertEqual(component["candidate_version"], "1.1.0")
         self.assertEqual(component["release_error"], "upstream offline")
+        self.assertEqual(component["release_candidates"]["routine"]["version"], "1.1.0")
+        self.assertIn("previous routine release", self.get("/services/app")[1])
 
     def test_multicomponent_unknown_does_not_hide_available_update(self):
         snapshot = service("1.0.0")
