@@ -7,19 +7,39 @@
     "timestamp": { "type": ["string", "null"], "format": "date-time" },
     "nullableString": { "type": ["string", "null"] },
     "nullableIdentity": { "type": ["object", "null"] },
+    "releaseCandidate": {
+      "type": "object", "required": ["version", "normalized_version", "source_url"],
+      "properties": {
+        "version": { "type": "string" }, "normalized_version": { "type": "string" },
+        "source_url": { "type": "string", "format": "uri", "pattern": "^https://" }
+      }
+    },
+    "advisoryCandidate": {
+      "allOf": [
+        { "$ref": "#/$defs/releaseCandidate" },
+        { "type": "object", "required": ["status", "reason"], "properties": {
+          "status": { "enum": ["fixed", "still affected", "unknown"] },
+          "reason": { "type": "string" }
+        } }
+      ]
+    },
     "updateStatus": { "enum": ["update available", "up to date", "unknown", "check failed"] },
-    "imageStatus": { "enum": ["image rebuild available", "up to date", "unknown", "check failed"] },
+    "imageStatus": { "enum": ["image update available", "up to date", "unknown", "check failed"] },
     "securityStatus": { "enum": ["findings", "no known findings", "incomplete coverage", "check failed"] },
     "coverage": { "enum": ["complete", "missing", "failed"] },
+    "securityOutcome": { "enum": ["success", "transient_failure", "access_required", "unsupported", "unavailable", "malformed", "unknown_failure"] },
     "counts": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
     "job": {
       "type": "object", "required": ["attempted_at", "succeeded_at", "error", "failures"],
       "properties": {
         "attempted_at": { "$ref": "#/$defs/timestamp" },
         "succeeded_at": { "$ref": "#/$defs/timestamp" },
+        "full_attempted_at": { "$ref": "#/$defs/timestamp" },
+        "next_full_at": { "$ref": "#/$defs/timestamp" },
+        "next_retry_at": { "$ref": "#/$defs/timestamp" },
         "error": { "$ref": "#/$defs/nullableString" },
         "failures": { "type": "integer", "minimum": 0 },
-        "state": { "enum": ["running", "interrupted", "completed"] }
+        "state": { "enum": ["running", "interrupted", "completed", "partial", "failed"] }
       }
     },
     "summary": {
@@ -71,7 +91,8 @@
       "type": "object", "required": ["id", "url", "affected_ranges"],
       "properties": {
         "id": { "type": "string" }, "url": { "type": "string", "format": "uri" },
-        "affected_ranges": { "type": "array", "items": { "type": "object" } }
+        "affected_ranges": { "type": "array", "items": { "type": "object" } },
+        "affected_versions": { "type": "array", "items": { "type": "string" } }
       }
     },
     "confirmedFinding": {
@@ -88,6 +109,46 @@
         } }
       }
     },
+    "versionObservation": {
+      "type": "object",
+      "required": ["source", "scope", "reported", "normalized", "checked_at", "outcome", "reason", "last_success"],
+      "properties": {
+        "source": {
+          "oneOf": [
+            { "type": "object", "required": ["type", "url", "documentation", "json_path"],
+              "properties": { "type": { "const": "endpoint" }, "url": { "type": "string", "format": "uri" },
+                "documentation": { "type": "string", "format": "uri" },
+                "json_path": { "type": "array", "minItems": 1, "maxItems": 12, "items": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$" } } } },
+            { "type": "object", "required": ["type", "repository", "documentation"],
+              "properties": { "type": { "const": "exact_tag" }, "repository": { "type": "string" },
+                "documentation": { "type": "string", "format": "uri" },
+                "prefix": { "type": "string" }, "suffix": { "type": "string" } } },
+            { "type": "object", "required": ["type", "repository", "documentation", "identity_label", "identity_value", "version_label"],
+              "properties": { "type": { "const": "image_metadata" }, "repository": { "type": "string" },
+                "documentation": { "type": "string", "format": "uri" }, "identity_label": { "type": "string" },
+                "identity_value": { "type": "string" }, "version_label": { "type": "string" } } },
+            { "type": "object", "required": ["type"],
+              "properties": { "type": { "const": "invalid" } }, "additionalProperties": false },
+            { "type": "object", "required": ["type", "key"],
+              "properties": { "type": { "const": "pod_annotation" }, "key": { "type": "string" } } }
+          ]
+        },
+        "manifest_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "config_digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "scope": { "enum": ["deployment", "shared endpoint"] },
+        "limitation": { "type": "string" },
+        "reported": { "$ref": "#/$defs/nullableString" },
+        "normalized": { "$ref": "#/$defs/nullableString" },
+        "checked_at": { "type": "string", "format": "date-time" },
+        "outcome": { "enum": ["success", "unknown", "expired", "check failed"] },
+        "reason": { "$ref": "#/$defs/nullableString" },
+        "last_success": {
+          "type": ["object", "null"], "required": ["reported", "normalized", "checked_at"],
+          "properties": { "reported": { "type": "string" }, "normalized": { "type": "string" },
+            "checked_at": { "type": "string", "format": "date-time" } }
+        }
+      }
+    },
     "deployment": {
       "type": "object", "required": ["namespace", "pod", "node", "container", "kind", "image", "image_id", "digest", "platform", "state"],
       "properties": {
@@ -96,13 +157,33 @@
         "kind": { "enum": ["regular", "init"] }, "image": { "$ref": "#/$defs/nullableString" },
         "image_id": { "$ref": "#/$defs/nullableString" }, "digest": { "$ref": "#/$defs/nullableString" },
         "platform": { "$ref": "#/$defs/nullableString" }, "state": { "type": "string" },
+        "version_observations": { "type": "array", "items": { "$ref": "#/$defs/versionObservation" } },
+        "version_state": { "enum": ["observed", "unknown", "disputed"] },
         "application_version": { "$ref": "#/$defs/nullableString" },
         "image_status": { "$ref": "#/$defs/imageStatus" },
         "image_reason": { "$ref": "#/$defs/nullableString" }, "image_error": { "$ref": "#/$defs/nullableString" },
         "candidate_image_digest": { "$ref": "#/$defs/nullableString" },
+        "image_update_kind": { "enum": [null, "image update", "verified rebuild"] },
+        "candidate_application_version": { "$ref": "#/$defs/nullableString" },
+        "configured_image": { "$ref": "#/$defs/nullableString" },
+        "image_update_history": {
+          "type": "object",
+          "properties": {
+            "image_update_kind": { "enum": ["image update", "verified rebuild"] },
+            "image_reason": { "$ref": "#/$defs/nullableString" },
+            "application_version": { "$ref": "#/$defs/nullableString" },
+            "candidate_application_version": { "$ref": "#/$defs/nullableString" },
+            "candidate_image_digest": { "$ref": "#/$defs/nullableString" },
+            "deployed_platform_digest": { "$ref": "#/$defs/nullableString" },
+            "image_checked_at": { "$ref": "#/$defs/timestamp" }
+          }
+        },
         "deployed_platform_digest": { "$ref": "#/$defs/nullableString" },
         "image_checked_at": { "$ref": "#/$defs/timestamp" }, "image_stale": { "type": "boolean" },
         "scan_coverage": { "$ref": "#/$defs/coverage" }, "scan_error": { "$ref": "#/$defs/nullableString" },
+        "scan_failure_phase": { "enum": [null, "db_refresh", "image_pull", "scan", "report_parsing"] },
+        "scan_exit_status": { "type": ["integer", "null"] }, "scan_failed_at": { "$ref": "#/$defs/timestamp" },
+        "scan_outcome": { "$ref": "#/$defs/securityOutcome" }, "scan_reason": { "$ref": "#/$defs/nullableString" },
         "scan_findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
         "scan_digest": { "$ref": "#/$defs/nullableString" }, "scan_platform": { "$ref": "#/$defs/nullableString" },
         "scan_checked_at": { "$ref": "#/$defs/timestamp" }, "scan_stale": { "type": "boolean" },
@@ -114,7 +195,27 @@
       "properties": {
         "id": { "type": "string" }, "name": { "type": "string" },
         "kind": { "enum": ["regular", "init"] }, "current_version": { "$ref": "#/$defs/nullableString" },
+        "advisory_version": { "$ref": "#/$defs/nullableString" },
+        "version_observations": { "type": "array", "items": { "$ref": "#/$defs/versionObservation" } },
+        "version_state": { "enum": ["observed", "unknown", "disputed", "mixed"] },
         "version_evidence": { "$ref": "#/$defs/nullableString" },
+        "advisory_candidate_assessments": {
+          "type": "object", "description": "Application finding ID to release assessments in the detailed view.",
+          "additionalProperties": {
+            "type": "object", "additionalProperties": false, "properties": {
+              "routine": { "$ref": "#/$defs/advisoryCandidate" },
+              "major": { "$ref": "#/$defs/advisoryCandidate" }
+            }
+          }
+        },
+        "release_candidates": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "routine": { "$ref": "#/$defs/releaseCandidate" },
+            "major": { "$ref": "#/$defs/releaseCandidate" },
+            "unclassified": { "$ref": "#/$defs/releaseCandidate" }
+          }
+        },
         "release_identity": { "$ref": "#/$defs/nullableIdentity" },
         "advisory_source_identity": { "$ref": "#/$defs/nullableIdentity" },
         "advisory_identity": { "$ref": "#/$defs/nullableIdentity" },
@@ -131,6 +232,7 @@
         "advisory_findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
         "advisory_checked_at": { "$ref": "#/$defs/timestamp" }, "advisory_stale": { "type": "boolean" },
         "advisory_error": { "$ref": "#/$defs/nullableString" }, "advisory_gap": { "$ref": "#/$defs/nullableString" },
+        "advisory_outcome": { "$ref": "#/$defs/securityOutcome" }, "advisory_reason": { "$ref": "#/$defs/nullableString" },
         "confirmed_findings": { "type": "array", "items": { "$ref": "#/$defs/confirmedFinding" } },
         "security_status": { "$ref": "#/$defs/securityStatus" }, "coverage_complete": { "type": "boolean" },
         "possible_finding_count": { "type": "integer", "minimum": 0 }

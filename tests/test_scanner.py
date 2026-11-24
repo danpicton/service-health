@@ -56,6 +56,7 @@ def report(digest=DIGEST, findings=True):
         "Results": [
             {
                 "Target": "alpine",
+                "Class": "os-pkgs",
                 "Vulnerabilities": [
                     {
                         "VulnerabilityID": "CVE-2026-0001",
@@ -128,6 +129,32 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual(item["security_status"], "incomplete coverage")
         self.assertEqual(item["critical_count"], 0)
 
+    def test_empty_results_and_non_package_results_leave_a_coverage_gap(self):
+        for results in ([], [{"Target": "etc/config", "Class": "config"}]):
+            with self.subTest(results=results):
+                output = {**report(), "Results": results}
+                item = apply_scan_checks([service()], FakeScanner(output), NOW)[0]
+                deployment = item["components"][0]["deployments"][0]
+                self.assertEqual(item["security_status"], "incomplete coverage")
+                self.assertEqual(deployment["scan_coverage"], "missing")
+                self.assertEqual(deployment["scan_outcome"], "unsupported")
+
+    def test_malformed_results_are_rejected_even_with_package_target(self):
+        invalid_results = (
+            None,
+            {},
+            [None],
+            [{"Target": "alpine", "Class": "os-pkgs", "Vulnerabilities": False}],
+            [{"Target": "alpine", "Class": "os-pkgs", "Vulnerabilities": [None]}],
+        )
+        for results in invalid_results:
+            with self.subTest(results=results):
+                output = {**report(), "Results": results}
+                item = apply_scan_checks([service()], FakeScanner(output), NOW)[0]
+                deployment = item["components"][0]["deployments"][0]
+                self.assertEqual(deployment["scan_coverage"], "failed")
+                self.assertEqual(deployment["scan_outcome"], "malformed")
+
     def test_failure_retains_prior_evidence_as_stale(self):
         prior = apply_scan_checks([service()], FakeScanner(), NOW)
         item = apply_scan_checks(prior, FakeScanner(error="registry offline"), NOW)[0]
@@ -135,8 +162,8 @@ class ScannerTests(unittest.TestCase):
         self.assertTrue(item["scan_stale"])
         self.assertEqual(len(item["scan_findings"]), 1)
         self.assertEqual(item["security_status"], "findings")
-        self.assertIn(
-            "registry offline", item["components"][0]["deployments"][0]["scan_error"]
+        self.assertEqual(
+            item["components"][0]["deployments"][0]["scan_reason"], "provider_failed"
         )
 
     def test_mismatched_digest_and_missing_identity_reject_reports(self):
@@ -152,6 +179,52 @@ class ScannerTests(unittest.TestCase):
             self.assertEqual(item["scan_coverage"], "failed")
             self.assertEqual(item["security_status"], "check failed")
             self.assertEqual(item["scan_findings"], [])
+
+    def test_results_omission_does_not_bypass_report_identity_validation(self):
+        deployed = service()
+        deployed["components"][0]["deployments"][0]["platform"] = "linux/arm/v7"
+        for config, digest in (
+            ({"os": "linux", "architecture": "arm", "variant": "v7"}, OTHER),
+            ({"os": "linux", "architecture": "amd64", "variant": "v7"}, DIGEST),
+            ({"os": "linux", "architecture": "arm", "variant": "v6"}, DIGEST),
+        ):
+            with self.subTest(config=config, digest=digest):
+                output = report(digest)
+                del output["Results"]
+                output["Metadata"]["ImageConfig"] = config
+                item = apply_scan_checks([deployed], FakeScanner(output), NOW)[0]
+                deployment = item["components"][0]["deployments"][0]
+                self.assertEqual(deployment["scan_coverage"], "failed")
+                self.assertEqual(deployment["scan_outcome"], "malformed")
+
+    def test_results_omission_does_not_hide_invalid_digest_metadata(self):
+        output = report()
+        del output["Results"]
+        output["Metadata"]["RepoDigests"] = output["ArtifactName"]
+        item = apply_scan_checks([service()], FakeScanner(output), NOW)[0]
+        deployment = item["components"][0]["deployments"][0]
+        self.assertEqual(deployment["scan_coverage"], "failed")
+        self.assertEqual(deployment["scan_outcome"], "malformed")
+
+    def test_repo_digest_cannot_override_conflicting_artifact_digest(self):
+        output = report(OTHER)
+        output["Metadata"]["RepoDigests"] = [f"registry.example/app@{DIGEST}"]
+
+        for package_results in (True, False):
+            with self.subTest(package_results=package_results):
+                if not package_results:
+                    del output["Results"]
+                item = apply_scan_checks([service()], FakeScanner(output), NOW)[0]
+                deployment = item["components"][0]["deployments"][0]
+                self.assertEqual(deployment["scan_outcome"], "malformed")
+                self.assertEqual(deployment["scan_findings"], [])
+
+    def test_tag_artifact_can_use_matching_repo_digest(self):
+        output = report(findings=False)
+        output["ArtifactName"] = "app:latest"
+        output["Metadata"]["RepoDigests"] = [f"app@{DIGEST}"]
+        item = apply_scan_checks([service()], FakeScanner(output), NOW)[0]
+        self.assertEqual(item["scan_coverage"], "complete")
 
     def test_missing_digest_has_coverage_gap(self):
         item = apply_scan_checks([service(None)], FakeScanner(), NOW)[0]
@@ -260,6 +333,63 @@ class ScannerHttpTests(HttpHarness):
         _, ambiguous = self.get_json("/api/v1/services/alpha")
         self.assertEqual(ambiguous["scan_coverage"], "missing")
         self.assertTrue(ambiguous["scan_stale"])
+
+    def test_local_external_reports_distinguish_missing_targets_and_bad_reports(self):
+        local = service()
+        deployment = local["components"][0]["deployments"][0]
+        deployment.update(image="localhost/example-app:latest", platform="linux/arm/v7")
+        reports = Path(self.directory.name) / "reports"
+        reports.mkdir()
+        external = ExternalReports(reports)
+        scanner = FakeScanner()
+        empty_result = report(findings=False)
+        empty_result["ArtifactName"] = f"localhost/example-app@{DIGEST}"
+        empty_result["Metadata"]["ImageConfig"] = {
+            "os": "linux",
+            "architecture": "arm",
+            "variant": "v7",
+        }
+        no_targets = {
+            key: value for key, value in empty_result.items() if key != "Results"
+        }
+        wrong_variant = copy.deepcopy(no_targets)
+        wrong_variant["Metadata"]["ImageConfig"]["variant"] = "v6"
+        wrong_digest = {**no_targets, "ArtifactName": f"localhost/example-app@{OTHER}"}
+        wrong_image = {**no_targets, "ArtifactName": f"localhost/other-app@{DIGEST}"}
+        non_image_report = {**empty_result, "ArtifactType": "filesystem"}
+        conflicting_digests = copy.deepcopy(wrong_digest)
+        conflicting_digests["Metadata"]["RepoDigests"] = [empty_result["ArtifactName"]]
+
+        for result, expected in (
+            (empty_result, "success"),
+            (no_targets, "unsupported"),
+            ({**no_targets, "Results": []}, "unsupported"),
+            ({**no_targets, "Results": None}, "malformed"),
+            (wrong_variant, "malformed"),
+            (wrong_digest, "malformed"),
+            (wrong_image, "malformed"),
+            (non_image_report, "malformed"),
+            (conflicting_digests, "malformed"),
+        ):
+            with self.subTest(result=result, expected=expected):
+                self.store.replace("2026-11-22T00:00:00Z", [local])
+                envelope = {
+                    "image": deployment["image"],
+                    "digest": deployment["digest"],
+                    "platform": deployment["platform"],
+                    "scanned_at": "2026-11-22T00:00:00Z",
+                    "report": result,
+                }
+                (reports / "local.json").write_text(json.dumps(envelope))
+                scan_store_once(self.store, scanner, NOW, external_reports=external)
+                _, detail = self.get_json("/api/v1/services/alpha")
+                observed = detail["components"][0]["deployments"][0]
+                self.assertEqual(observed["scan_outcome"], expected)
+                self.assertEqual(
+                    observed["scan_coverage"],
+                    "complete" if expected == "success" else "missing",
+                )
+        self.assertEqual(scanner.calls, [])
 
 
 if __name__ == "__main__":

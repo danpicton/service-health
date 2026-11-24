@@ -126,7 +126,9 @@ class Scanner:
             "SchemaVersion": 2,
             "ArtifactName": target,
             "Metadata": {"ImageConfig": {"os": "linux", "architecture": "amd64"}},
-            "Results": [{"Target": "packages", "Vulnerabilities": issue}],
+            "Results": [
+                {"Target": "packages", "Class": "os-pkgs", "Vulnerabilities": issue}
+            ],
         }
 
 
@@ -179,7 +181,7 @@ class AggregationTest(HttpHarness):
 
                 self.assertEqual(summary["service_count"], 3)
                 self.assertEqual(summary["update_status"], "update available")
-                self.assertEqual(summary["image_status"], "image rebuild available")
+                self.assertEqual(summary["image_status"], "image update available")
                 self.assertEqual(summary["security_status"], "findings")
                 self.assertEqual(summary["confirmed_finding_count"], 1)
                 self.assertEqual(summary["high_count"], 1)
@@ -189,7 +191,7 @@ class AggregationTest(HttpHarness):
                 self.assertFalse(summary["coverage_complete"])
 
                 self.assertEqual(mixed["update_status"], "update available")
-                self.assertEqual(mixed["image_status"], "image rebuild available")
+                self.assertEqual(mixed["image_status"], "image update available")
                 self.assertEqual(
                     mixed["components"][0]["update_status"], "update available"
                 )
@@ -214,7 +216,7 @@ class AggregationTest(HttpHarness):
                 )
                 self.assertEqual(home["confirmed_finding_count"], 1)
                 self.assertEqual(home["update_status"], "update available")
-                self.assertEqual(home["image_status"], "image rebuild available")
+                self.assertEqual(home["image_status"], "image update available")
                 self.assertEqual(home["high_count"], 1)
                 self.assertEqual(home["possible_finding_count"], 1)
                 self.assertFalse(home["coverage_complete"])

@@ -2,12 +2,13 @@
 
 import html
 import json
+import sqlite3
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import BoundedSemaphore
 from urllib.parse import quote, unquote, urlsplit
 
-from service_health.freshness import project
+from service_health.freshness import DEFAULT_INVENTORY_MAX_AGE, project
 from service_health.store import Store
 
 
@@ -37,7 +38,7 @@ def _summary(snapshot: dict | None) -> dict:
             (
                 status
                 for status in (
-                    "image rebuild available",
+                    "image update available",
                     "check failed",
                     "unknown",
                     "up to date",
@@ -51,7 +52,7 @@ def _summary(snapshot: dict | None) -> dict:
                 item.get("image_status", "unknown") == status for item in services
             )
             for status in (
-                "image rebuild available",
+                "image update available",
                 "up to date",
                 "unknown",
                 "check failed",
@@ -239,6 +240,23 @@ def _homepage(service: dict, checked_at: str | None) -> dict:
     }
 
 
+def _job_markup(name, job):
+    label = html.escape(name) + " job"
+    state = job.get("state")
+    if state in ("running", "interrupted"):
+        yield f"<p>{label} {html.escape(state)}.</p>"
+    elif state == "partial":
+        yield f"<p>{label} completed with coverage gaps.</p>"
+    if job.get("error") and state != "interrupted":
+        error = html.escape(job["error"])
+        succeeded = html.escape(job.get("succeeded_at") or "never")
+        yield f"<p>{label} failed: {error}; last successful: {succeeded}</p>"
+    if job.get("next_full_at"):
+        full = html.escape(job["next_full_at"])
+        retry = html.escape(job.get("next_retry_at") or "none scheduled")
+        yield f"<p>Next full security scan: {full}; next retry: {retry}</p>"
+
+
 def _page(snapshot: dict | None, service: dict | None = None) -> str:
     home_href = "../" if service is not None else "./"
     parts = [
@@ -246,6 +264,7 @@ def _page(snapshot: dict | None, service: dict | None = None) -> str:
         "<title>Service health</title></head><body>",
         f'<header><h1><a href="{home_href}">Service health</a></h1></header><main>',
     ]
+    jobs = snapshot.get("jobs", {}) if snapshot else {}
     if service is not None:
         parts.append(f"<h2>{html.escape(service.get('name', service['id']))}</h2>")
         if service.get("stale"):
@@ -256,29 +275,15 @@ def _page(snapshot: dict | None, service: dict | None = None) -> str:
                 + html.escape(service["inventory_error"])
                 + "</p>"
             )
+        elif service.get("inventory_stale"):
+            parts.append("<p>Inventory observation expired.</p>")
         for name in ("release", "security"):
-            job = snapshot.get("jobs", {}).get(name, {}) if snapshot else {}
-            if job.get("state") in ("running", "interrupted"):
-                parts.append(
-                    "<p>"
-                    + html.escape(name)
-                    + " job "
-                    + html.escape(job["state"])
-                    + ".</p>"
-                )
-            if job.get("error") and job.get("state") != "interrupted":
-                parts.append(
-                    "<p>"
-                    + html.escape(name)
-                    + " job failed: "
-                    + html.escape(job["error"])
-                    + "; last successful: "
-                    + html.escape(job.get("succeeded_at") or "never")
-                    + "</p>"
-                )
+            parts.extend(_job_markup(name, jobs.get(name, {})))
         parts.append(
             f"<p>Update: {html.escape(service.get('update_status', 'unknown'))}</p>"
         )
+        if not service.get("update_coverage_complete"):
+            parts.append("<p>Incomplete component update checks.</p>")
         parts.append(
             f"<p>Image: {html.escape(service.get('image_status', 'unknown'))}</p>"
         )
@@ -324,50 +329,20 @@ def _page(snapshot: dict | None, service: dict | None = None) -> str:
             "<p>No cached collection has completed. "
             "Services have not been assessed.</p>"
         )
-        for name, job in snapshot.get("jobs", {}).items() if snapshot else []:
-            if job.get("state") in ("running", "interrupted"):
-                parts.append(
-                    "<p>"
-                    + html.escape(name)
-                    + " job "
-                    + html.escape(job["state"])
-                    + ".</p>"
-                )
-            if job.get("error") and job.get("state") != "interrupted":
-                parts.append(
-                    "<p>"
-                    + html.escape(name)
-                    + " job failed: "
-                    + html.escape(job["error"])
-                    + "</p>"
-                )
+        for name, job in jobs.items():
+            parts.extend(_job_markup(name, job))
     elif not snapshot["services"]:
         parts.append(
             "<p>The cached catalog is empty. No services have been assessed.</p>"
         )
+        for name, job in jobs.items():
+            parts.extend(_job_markup(name, job))
     else:
         summary = _summary(snapshot)
         if summary["stale"]:
             parts.append("<p>Some previous results are stale.</p>")
-        for name, job in summary["jobs"].items():
-            if job.get("state") in ("running", "interrupted"):
-                parts.append(
-                    "<p>"
-                    + html.escape(name)
-                    + " job "
-                    + html.escape(job["state"])
-                    + ".</p>"
-                )
-            if job.get("error") and job.get("state") != "interrupted":
-                parts.append(
-                    "<p>"
-                    + html.escape(name)
-                    + " job failed: "
-                    + html.escape(job["error"])
-                    + "; last successful: "
-                    + html.escape(job.get("succeeded_at") or "never")
-                    + "</p>"
-                )
+        for name, job in jobs.items():
+            parts.extend(_job_markup(name, job))
         parts.append(
             "<p>Overall update: "
             + html.escape(summary["update_status"])
@@ -398,11 +373,76 @@ def _page(snapshot: dict | None, service: dict | None = None) -> str:
                 + "; coverage complete: "
                 + str(bool(item.get("coverage_complete", False))).lower()
             )
+            if not item.get("update_coverage_complete"):
+                parts.append("; incomplete component update checks")
             parts.extend(_component_markup(item))
             parts.append("</li>")
         parts.append("</ul>")
     parts.append("</main></body></html>")
     return "".join(parts)
+
+
+def _version_markup(record):
+    parts = []
+    source = record["source"]
+    identity = source.get("url") or source.get("repository") or source.get("key")
+    parts.append(
+        "<p>Version source "
+        + html.escape(source["type"])
+        + " ("
+        + html.escape(identity or "unknown")
+        + "), scope "
+        + html.escape(record["scope"])
+        + ", "
+        + html.escape(record["outcome"])
+        + ". Reported "
+        + html.escape(record["reported"] or "unknown")
+        + ", normalized "
+        + html.escape(record["normalized"] or "unknown")
+        + ", checked "
+        + html.escape(record["checked_at"] or "never")
+    )
+    if source["type"] == "image_metadata":
+        parts.append(
+            ". Application label "
+            + html.escape(source["identity_label"])
+            + " = "
+            + html.escape(source["identity_value"])
+            + ", version label "
+            + html.escape(source["version_label"])
+        )
+        if record.get("config_digest"):
+            parts.append(
+                ", manifest "
+                + html.escape(record["manifest_digest"])
+                + ", config "
+                + html.escape(record["config_digest"])
+            )
+    if record.get("limitation"):
+        parts.append(". " + html.escape(record["limitation"]))
+    if record.get("reason"):
+        parts.append(". " + html.escape(record["reason"]))
+    previous = record.get("last_success")
+    if previous and record["outcome"] != "success":
+        parts.append(
+            ". Last successful version "
+            + html.escape(previous["normalized"])
+            + " at "
+            + html.escape(previous["checked_at"])
+        )
+        prior_identity = previous.get("assessed_identity") or {}
+        prior_source = previous.get("source") or prior_identity.get(
+            "version_source", {}
+        )
+        if prior_source.get("url"):
+            parts.append(" from " + html.escape(prior_source["url"]))
+        for deployment in prior_identity.get("deployments", []):
+            parts.append(
+                "; previously assessed "
+                + html.escape(" ".join(str(value) for value in deployment if value))
+            )
+    parts.append("</p>")
+    return parts
 
 
 def _component_markup(service: dict) -> list[str]:
@@ -415,14 +455,31 @@ def _component_markup(service: dict) -> list[str]:
         kind = html.escape(component.get("kind", "unknown"))
         version = html.escape(component.get("current_version") or "unknown")
         parts.append(f"<li><strong>{name}</strong> ({kind}); version: {version}")
+        if component.get("version_evidence"):
+            parts.append(" (" + html.escape(component["version_evidence"]) + ")")
+        for record in component.get("version_observations", []):
+            parts.extend(_version_markup(record))
         status = html.escape(component.get("update_status", "unknown"))
-        candidate = html.escape(component.get("candidate_version") or "unknown")
         update_kind = html.escape(component.get("update_kind") or "unknown")
         checked = html.escape(component.get("release_checked_at") or "never")
-        parts.append(
-            f"; update: {status}; candidate: {candidate}; "
-            f"change: {update_kind}; release checked: {checked}"
-        )
+        parts.append(f"; update: {status}; release checked: {checked}")
+        if "release_candidates" in component:
+            for group in ("routine", "major", "unclassified"):
+                candidate = component["release_candidates"].get(group)
+                if candidate:
+                    label = "previous " if component.get("release_stale") else ""
+                    tag = html.escape(candidate["version"])
+                    url = candidate["source_url"]
+                    if url.startswith("https://"):
+                        tag = f'<a href="{html.escape(url, quote=True)}">{tag}</a>'
+                    parts.append(f"; {label}{group} release: {tag}")
+        elif component.get("candidate_version"):
+            parts.append(
+                "; latest eligible release: "
+                + html.escape(component["candidate_version"])
+            )
+        if component.get("update_kind"):
+            parts.append(f"; change: {update_kind}")
         image_status = html.escape(component.get("image_status", "unknown"))
         parts.append(f"; image: {image_status}")
         parts.append(
@@ -435,6 +492,10 @@ def _component_markup(service: dict) -> list[str]:
         )
         if component.get("advisory_gap"):
             parts.append("; advisory gap: " + html.escape(component["advisory_gap"]))
+        if component.get("advisory_reason"):
+            parts.append(
+                "; advisory reason: " + html.escape(component["advisory_reason"])
+            )
         if component.get("advisory_error"):
             parts.append(
                 "; advisory check failed: " + html.escape(component["advisory_error"])
@@ -459,6 +520,16 @@ def _component_markup(service: dict) -> list[str]:
                     "; fixed versions: "
                     + html.escape(", ".join(finding["fixed_versions"]))
                 )
+            assessments = component.get("advisory_candidate_assessments", {}).get(
+                finding["id"], {}
+            )
+            for group, assessment in assessments.items():
+                version = html.escape(assessment["version"])
+                status = html.escape(assessment["status"])
+                reason = html.escape(assessment["reason"])
+                parts.append(
+                    f"; {html.escape(group)} release {version} ({status}). {reason}"
+                )
             for provenance in finding.get("provenance", []):
                 url = provenance.get("url")
                 if isinstance(url, str) and url.startswith("https://"):
@@ -468,6 +539,11 @@ def _component_markup(service: dict) -> list[str]:
                         + '">'
                         + html.escape(provenance["id"])
                         + " source</a>"
+                    )
+                if provenance.get("affected_versions"):
+                    parts.append(
+                        "; affected versions: "
+                        + html.escape(", ".join(provenance["affected_versions"]))
                     )
                 parts.append(
                     "; affected ranges: "
@@ -509,6 +585,10 @@ def _component_markup(service: dict) -> list[str]:
                     f"deployed platform digest {deployed_platform}; "
                     f"current tag platform digest {candidate_image}"
                 )
+                for record in deployment.get("version_observations", []):
+                    parts.extend(_version_markup(record))
+                if deployment.get("image_update_kind") == "verified rebuild":
+                    parts.append("; verified rebuild")
                 if deployment.get("image_reason"):
                     parts.append("; " + html.escape(deployment["image_reason"]))
                 if deployment.get("image_error"):
@@ -518,6 +598,17 @@ def _component_markup(service: dict) -> list[str]:
                     )
                 if deployment.get("image_stale"):
                     parts.append("; previous image evidence is stale")
+                    history = deployment.get("image_update_history")
+                    if history:
+                        parts.append(
+                            "; previous classification: "
+                            + html.escape(history["image_update_kind"])
+                            + " ("
+                            + html.escape(
+                                history.get("image_checked_at") or "unknown time"
+                            )
+                            + ")"
+                        )
                 parts.append(
                     "; scanner coverage: "
                     + html.escape(deployment.get("scan_coverage", "missing"))
@@ -531,6 +622,10 @@ def _component_markup(service: dict) -> list[str]:
                     )
                 if deployment.get("scan_error"):
                     parts.append("; scanner: " + html.escape(deployment["scan_error"]))
+                if deployment.get("scan_reason"):
+                    parts.append(
+                        "; scan reason: " + html.escape(deployment["scan_reason"])
+                    )
                 if deployment.get("scan_stale"):
                     parts.append("; previous scan findings are stale")
                 for finding in deployment.get("scan_findings", []):
@@ -579,6 +674,7 @@ def make_handler(
     clock=lambda: datetime.now(timezone.utc),
     release_max_age=None,
     security_max_age=None,
+    inventory_max_age=DEFAULT_INVENTORY_MAX_AGE,
 ) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -587,33 +683,36 @@ def make_handler(
                 self._json(200, {"status": "alive"})
                 return
             if path == "/readyz":
-                self._json(
-                    200,
-                    {
-                        "status": "ready",
-                        "cache_state": store.cache_state(),
-                    },
-                )
+                try:
+                    cache_state = store.cache_state()
+                except sqlite3.Error:
+                    self._json(503, {"status": "unready"})
+                else:
+                    self._json(200, {"status": "ready", "cache_state": cache_state})
                 return
-            detail = path.startswith("/api/v1/services/") or path.startswith(
-                "/services/"
-            )
+            api_prefix = "/api/v1/services/"
+            html_prefix = "/services/"
+            api_service = path.startswith(api_prefix)
+            detail = api_service or path.startswith(html_prefix)
+            remainder = path.removeprefix(api_prefix if api_service else html_prefix)
+            homepage = api_service and remainder.endswith("/homepage")
+            # A newer job result must not freshen older rows during a refresh.
+            jobs = store.read_jobs()
             if detail:
                 service_id = (
-                    path.removeprefix("/api/v1/services/")
-                    .removeprefix("/services/")
-                    .removesuffix("/homepage")
+                    remainder.removesuffix("/homepage") if homepage else remainder
                 )
-                raw = store.read_service(service_id, path.endswith("/homepage"))
+                raw = store.read_service(service_id, compact=homepage)
             else:
                 raw = store.read_compact()
             snapshot = project(
                 raw,
-                store.read_jobs(),
+                jobs,
                 clock,
                 release_max_age,
                 security_max_age,
-                compact=not detail or path.endswith("/homepage"),
+                compact=not detail or homepage,
+                inventory_max_age=inventory_max_age,
             )
             if path == "/api/v1/summary":
                 self._json(200, _summary(snapshot))
@@ -685,7 +784,12 @@ def make_handler(
 
 
 def create_server(
-    store: Store, host: str, port: int, release_max_age=43200, security_max_age=172800
+    store: Store,
+    host: str,
+    port: int,
+    release_max_age=43200,
+    security_max_age=172800,
+    inventory_max_age=DEFAULT_INVENTORY_MAX_AGE,
 ) -> ThreadingHTTPServer:
     class BoundedServer(ThreadingHTTPServer):
         def __init__(self, *args, **kwargs):
@@ -709,6 +813,9 @@ def create_server(
     return BoundedServer(
         (host, port),
         make_handler(
-            store, release_max_age=release_max_age, security_max_age=security_max_age
+            store,
+            release_max_age=release_max_age,
+            security_max_age=security_max_age,
+            inventory_max_age=inventory_max_age,
         ),
     )

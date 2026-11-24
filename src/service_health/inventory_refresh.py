@@ -11,6 +11,7 @@ _RELEASE_FIELDS = (
     "update_status",
     "update_reason",
     "candidate_version",
+    "release_candidates",
     "update_kind",
     "release_source_url",
     "release_checked_at",
@@ -19,12 +20,15 @@ _RELEASE_FIELDS = (
 )
 _ADVISORY_FIELDS = (
     "advisory_coverage",
+    "advisory_outcome",
+    "advisory_reason",
     "advisory_gap",
     "advisory_error",
     "advisory_stale",
     "advisory_findings",
     "advisory_checked_at",
     "advisory_identity",
+    "advisory_attempt",
 )
 _IMAGE_FIELDS = (
     "image_status",
@@ -34,10 +38,18 @@ _IMAGE_FIELDS = (
     "image_checked_at",
     "candidate_image_digest",
     "deployed_platform_digest",
+    "candidate_application_version",
+    "image_update_kind",
+    "image_update_history",
 )
 _SCAN_FIELDS = (
     "scan_coverage",
+    "scan_outcome",
+    "scan_reason",
     "scan_error",
+    "scan_failure_phase",
+    "scan_exit_status",
+    "scan_failed_at",
     "scan_findings",
     "scan_digest",
     "scan_platform",
@@ -45,6 +57,7 @@ _SCAN_FIELDS = (
     "scan_source",
     "scan_reported_at",
     "scan_stale",
+    "scan_attempt",
 )
 
 
@@ -70,7 +83,47 @@ def _status(values, precedence, default="unknown"):
     return next((value for value in precedence if value in present), default)
 
 
-def merge_inventory(services, previous):
+def _restore_endpoint_history(component, old):
+    previous = [r for r in old.get("version_observations", []) if r.get("last_success")]
+    samples = component.get("version_observations", [])
+    removed = [r for r in previous if all(r["source"] != s["source"] for s in samples)]
+    for sample in samples:
+        if sample["last_success"]:
+            continue
+        prior = next((r for r in previous if r["source"] == sample["source"]), None)
+        if prior is None and len(samples) == len(removed) == 1:
+            prior = removed.pop()
+        if prior:
+            sample["last_success"] = {
+                "assessed_identity": old.get("version_source_identity"),
+                "source": prior["source"],
+                **prior["last_success"],
+            }
+    # Keep the most recent endpoint observations as explicitly historical gaps.
+    for prior in removed:
+        if (
+            samples
+            and prior.get("reason")
+            == "previous endpoint source is no longer configured"
+        ):
+            continue
+        component.setdefault("version_observations", []).append(
+            {
+                **prior,
+                "reported": None,
+                "normalized": None,
+                "outcome": "unknown",
+                "reason": "previous endpoint source is no longer configured",
+                "last_success": {
+                    "assessed_identity": old.get("version_source_identity"),
+                    "source": prior["source"],
+                    **prior["last_success"],
+                },
+            }
+        )
+
+
+def merge_inventory(services, previous, *, restore_history=True):
     """Carry evidence only when its assessed identity still matches."""
     old_services = {service["id"]: service for service in previous or []}
     for service in services:
@@ -80,6 +133,8 @@ def merge_inventory(services, previous):
         }
         for component in service["components"]:
             old = old_components.get(component["id"], {})
+            if restore_history:
+                _restore_endpoint_history(component, old)
             if component.get("release_identity") and (
                 component["release_identity"] == old.get("release_identity")
             ):
@@ -94,14 +149,70 @@ def merge_inventory(services, previous):
                 for item in old.get("deployments", [])
                 if _deployment_identity(item)
             }
+            old_replicas = {
+                (item.get("namespace"), item.get("pod"), item.get("container")): item
+                for item in old.get("deployments", [])
+            }
+            old_images = {
+                (_deployment_identity(item), item.get("configured_image")): item
+                for item in old.get("deployments", [])
+            }
             for deployment in component["deployments"]:
+                replica = tuple(
+                    deployment.get(k) for k in ("namespace", "pod", "container")
+                )
+                prior_replica = old_replicas.get(replica, {})
+                if (
+                    restore_history
+                    and deployment.get("digest")
+                    and all(
+                        deployment.get(key) == prior_replica.get(key)
+                        for key in ("image", "digest", "platform")
+                    )
+                ):
+                    for record in deployment.get("version_observations", []):
+                        if record["last_success"] is None:
+                            record["last_success"] = next(
+                                (
+                                    prior["last_success"]
+                                    for prior in prior_replica.get(
+                                        "version_observations", []
+                                    )
+                                    if prior["source"] == record["source"]
+                                ),
+                                None,
+                            )
+
                 identity = _deployment_identity(deployment)
-                if identity and identity in old_deployments:
-                    old_deployment = old_deployments[identity]
+                old_deployment = old_images.get(
+                    (identity, deployment.get("configured_image"))
+                )
+                if identity == _deployment_identity(prior_replica) and deployment.get(
+                    "configured_image"
+                ) == prior_replica.get("configured_image"):
+                    old_deployment = prior_replica
+                if identity and old_deployment:
                     _copy_fields(deployment, old_deployment, _IMAGE_FIELDS)
-                    _copy_fields(deployment, old_deployment, _SCAN_FIELDS)
+                    if deployment.get("image_status") == "image update available" and (
+                        deployment.get("application_version")
+                        != old_deployment.get("application_version")
+                        or deployment.get("version_state")
+                        != old_deployment.get("version_state")
+                        or component.get("version_source_identity")
+                        != old.get("version_source_identity")
+                        or (component.get("release_identity") or {}).get("source")
+                        != (old.get("release_identity") or {}).get("source")
+                    ):
+                        deployment.update(
+                            candidate_application_version=None,
+                            image_update_kind="image update",
+                            image_reason="Version evidence changed since image check.",
+                        )
                 else:
-                    deployment["image_status"] = "unknown"
+                    deployment.setdefault("image_status", "unknown")
+                if identity and identity in old_deployments:
+                    _copy_fields(deployment, old_deployments[identity], _SCAN_FIELDS)
+                else:
                     deployment["scan_coverage"] = "missing"
             deployments = component["deployments"]
             component["update_status"] = component.get("update_status", "unknown")
@@ -113,10 +224,10 @@ def merge_inventory(services, previous):
             component["advisory_findings"] = component.get("advisory_findings", [])
             component["image_status"] = _status(
                 (item.get("image_status", "unknown") for item in deployments),
-                ("image rebuild available", "check failed", "unknown", "up to date"),
+                ("image update available", "check failed", "unknown", "up to date"),
             )
             component["image_coverage_complete"] = bool(deployments) and all(
-                item.get("image_status") in ("image rebuild available", "up to date")
+                item.get("image_status") in ("image update available", "up to date")
                 for item in deployments
             )
             component["image_stale"] = any(
@@ -172,7 +283,7 @@ def merge_inventory(services, previous):
         )
         service["image_status"] = _status(
             (item["image_status"] for item in components),
-            ("image rebuild available", "check failed", "unknown", "up to date"),
+            ("image update available", "check failed", "unknown", "up to date"),
         )
         service["image_coverage_complete"] = bool(components) and all(
             item["image_coverage_complete"] for item in components
@@ -247,21 +358,22 @@ def refresh_inventory(
                 try:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
-                except BlockingIOError:
+                except BlockingIOError as error:
                     remaining = deadline - monotonic()
-                    if remaining <= 0:
-                        raise TimeoutError(
-                            "inventory commit lock wait exceeded deadline"
-                        )
-                    sleep(min(0.25, remaining))
+                    if remaining > 0:
+                        sleep(min(0.25, remaining))
+                        if monotonic() <= deadline:
+                            continue
+                    raise TimeoutError(
+                        "inventory commit lock wait exceeded deadline"
+                    ) from error
             fresh = collect()
             previous = store.read()
             merged = merge_inventory(fresh, previous["services"] if previous else None)
             succeeded = (
                 clock().astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
             )
-            store.replace(succeeded, merged)
-            store.record_job("inventory", succeeded, None)
+            store.replace(succeeded, merged, completed_job="inventory")
     except Exception as error:
         store.record_job("inventory", attempted, f"{type(error).__name__}: {error}")
         raise

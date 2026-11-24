@@ -2,8 +2,24 @@
 
 import re
 from collections.abc import Mapping
+from datetime import datetime, timezone
+
+from service_health.images import deployed_image_config
+from service_health.version_evidence import (
+    configured_source,
+    deployment_observations,
+    endpoint_observation,
+    fetch_endpoint,
+    inventory_metadata_reader,
+    normalize_observations,
+)
 
 _DIGEST = re.compile(r"(?:^|@)(sha256:[0-9a-fA-F]{64})$")
+_SOURCE_LABELS = {
+    "pod_annotation": "configured pod annotation",
+    "image_metadata": "deployed image metadata",
+    "exact_tag": "documented exact image tag",
+}
 _CONTAINER_FIELDS = (
     ("regular", "containers", "containerStatuses"),
     ("init", "initContainers", "initContainerStatuses"),
@@ -13,7 +29,7 @@ _CONTAINER_FIELDS = (
 def _digest(image_id: str | None) -> str | None:
     if not image_id:
         return None
-    match = _DIGEST.search(image_id)
+    match = _DIGEST.search(image_id.removeprefix("docker://"))
     return match.group(1).lower() if match else None
 
 
@@ -32,7 +48,7 @@ def _matches(pod: Mapping, selector: Mapping) -> bool:
 
 
 def _observed_containers(
-    pod: Mapping, component: Mapping, nodes: Mapping
+    pod: Mapping, component: Mapping, nodes: Mapping, checked_at: str, read_metadata
 ) -> list[dict]:
     result = []
     selector = component["selector"]
@@ -63,12 +79,25 @@ def _observed_containers(
         )
         image_id = observed.get("imageID")
         image = observed.get("image") or configured.get("image")
-        version_key = component.get("version_annotation")
-        version = (
-            metadata.get("annotations", {}).get(version_key) if version_key else None
+        metadata_image = image
+        configured_image = configured.get("image") or ""
+        if "@" in configured_image and "@" not in (image or ""):
+            metadata_image = configured_image
+        platform = _platform(nodes.get(node_name))
+        evidence = deployment_observations(
+            component["version_sources"],
+            component.get("version_annotation"),
+            metadata.get("annotations", {}),
+            observed.get("image"),
+            metadata_image,
+            _digest(image_id),
+            checked_at,
+            platform,
+            read_metadata,
         )
-        if not version:
-            version = None
+        normalize_observations(evidence, component.get("release_source"))
+        versions = {item["normalized"] for item in evidence if item["normalized"]}
+        version = next(iter(versions)) if len(versions) == 1 else None
         result.append(
             {
                 "namespace": metadata["namespace"],
@@ -77,38 +106,141 @@ def _observed_containers(
                 "container": selector["container"],
                 "kind": kind,
                 "image": image,
+                "configured_image": configured_image,
                 "image_id": image_id,
                 "digest": _digest(image_id),
-                "platform": _platform(nodes.get(node_name)),
+                "platform": platform,
                 "application_version": version,
+                "version_state": "disputed"
+                if len(versions) > 1
+                else "observed"
+                if version
+                else "unknown",
+                "version_observations": evidence,
                 "state": "observed" if observed else "status unavailable",
             }
         )
     return result
 
 
+def _reconcile(deployments, shared):
+    replicas = {
+        d["application_version"] for d in deployments if d["application_version"]
+    }
+    samples = {r["normalized"] for r in shared if r["normalized"]}
+    records = [r for d in deployments for r in d["version_observations"]]
+    disputes = [
+        d["pod"] or "unknown pod"
+        for d in deployments
+        if d["version_state"] == "disputed"
+    ]
+    reasons = []
+    if disputes:
+        reasons.append("disputed deployment evidence for " + ", ".join(disputes))
+    if len(samples) > 1 or (samples and replicas and samples - replicas):
+        reasons.append(
+            "disputed: endpoint-reported and deployed or shared versions differ"
+        )
+    disputed = bool(reasons)
+    if len(replicas) > 1:
+        reasons.append("mixed deployments: " + ", ".join(sorted(replicas)))
+    if reasons:
+        return "disputed" if disputed else "mixed", None, None, "; ".join(reasons)
+    deployment_version = (
+        next(iter(replicas))
+        if replicas and all(d["application_version"] for d in deployments)
+        else None
+    )
+    if samples:
+        return (
+            "observed",
+            next(iter(samples)),
+            deployment_version,
+            "endpoint-reported version",
+        )
+    if deployment_version:
+        labels = sorted(
+            {_SOURCE_LABELS[r["source"]["type"]] for r in records if r["normalized"]}
+        )
+        return "observed", deployment_version, deployment_version, ", ".join(labels)
+    gaps = [r["reason"] for r in [*records, *shared] if r["reason"]]
+    return (
+        "unknown",
+        None,
+        None,
+        "; ".join(dict.fromkeys(gaps)) or "no reliable application version",
+    )
+
+
 def _component(
-    component: Mapping, pods: list[dict], nodes: Mapping, track_prereleases=False
+    component: Mapping,
+    pods: list[dict],
+    nodes: Mapping,
+    checked_at: str,
+    read_metadata,
+    endpoint_fetch,
+    track_prereleases=False,
 ) -> dict:
+    configured = component.get("version_sources", [])
+    if not isinstance(configured, list):
+        configured = [{"type": "invalid"}]
+    sources = []
+    for raw in [component.get("version_source"), *configured]:
+        source = configured_source(raw)
+        if source and source not in sources:
+            sources.append(source)
+    component = {**component, "version_sources": sources}
     deployments = [
         deployment
         for pod in pods
         if _matches(pod, component["selector"])
-        for deployment in _observed_containers(pod, component, nodes)
+        for deployment in _observed_containers(
+            pod, component, nodes, checked_at, read_metadata
+        )
     ]
     deployments.sort(key=lambda item: (item["namespace"], item["pod"] or ""))
-    versions = {item["application_version"] for item in deployments}
-    version = next(iter(versions)) if len(versions) == 1 else None
+    shared = [
+        endpoint_observation(source, checked_at, endpoint_fetch, deployments)
+        for source in sources
+        if source["type"] == "endpoint"
+    ]
+    normalize_observations(shared, component.get("release_source"))
+    state, version, deployment_version, label = _reconcile(deployments, shared)
+    binding = {"version_annotation": component.get("version_annotation")}
+    if sources:
+        if len(sources) == 1:
+            binding["version_source"] = sources[0]
+        elif sources:
+            binding["version_sources"] = sources
+        binding.update(
+            deployments=[
+                [
+                    d[key]
+                    for key in (
+                        "namespace",
+                        "pod",
+                        "container",
+                        "image",
+                        "digest",
+                        "platform",
+                    )
+                ]
+                for d in deployments
+            ],
+        )
     return {
         "id": component["id"],
         "name": component.get("name", component["id"]),
         "kind": component["selector"]["kind"],
         "current_version": version,
-        "version_evidence": (
-            "configured pod annotation"
-            if version is not None
-            else "unknown: no reliable application version or replicas disagree"
+        "version_evidence": label,
+        "version_state": state,
+        **(
+            {"version_observations": shared, "advisory_version": deployment_version}
+            if shared
+            else {}
         ),
+        "version_source_identity": binding,
         "inventory_status": "observed" if deployments else "not observed",
         "deployments": deployments,
         "release_identity": (
@@ -119,6 +251,8 @@ def _component(
                 ),
                 "current_version": version,
                 "selector": component["selector"],
+                **({"version_evidence": label} if version is None else {}),
+                **binding,
             }
             if isinstance(component.get("release_source"), dict)
             else None
@@ -126,8 +260,10 @@ def _component(
         "advisory_source_identity": (
             {
                 "source": component["advisory_source"],
-                "current_version": version,
+                "current_version": deployment_version,
                 "selector": component["selector"],
+                **({"version_evidence": label} if version is None else {}),
+                **binding,
             }
             if isinstance(component.get("advisory_source"), dict)
             else None
@@ -136,9 +272,18 @@ def _component(
 
 
 def collect_inventory(
-    registry: list[dict], catalog: list[dict], pods: list[dict], nodes: list[dict]
+    registry: list[dict],
+    catalog: list[dict],
+    pods: list[dict],
+    nodes: list[dict],
+    clock=lambda: datetime.now(timezone.utc),
+    *,
+    image_config=deployed_image_config,
+    endpoint_fetch=fetch_endpoint,
 ) -> list[dict]:
     """Return one cached service per active registry entry."""
+    checked_at = clock().astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    read_metadata = inventory_metadata_reader(checked_at, image_config)
     active = [item for item in registry if item.get("active") is True]
     registry_ids = [item["id"] for item in active]
     catalog_ids = [item["id"] for item in catalog]
@@ -182,6 +327,9 @@ def collect_inventory(
                 item,
                 usable_pods,
                 node_by_name,
+                checked_at,
+                read_metadata,
+                endpoint_fetch,
                 configured.get("track_prereleases", False),
             )
             for item in components

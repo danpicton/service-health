@@ -9,6 +9,17 @@ from pathlib import Path
 _DETAIL_KEYS = frozenset(("scan_findings", "advisory_findings", "confirmed_findings"))
 
 
+def _decode_service(service):
+    # Older caches used rebuild wording for every platform digest change.
+    for component in service.get("components", []):
+        for item in [component, *component.get("deployments", [])]:
+            if item.get("image_status") == "image rebuild available":
+                item["image_status"] = "image update available"
+    if service.get("image_status") == "image rebuild available":
+        service["image_status"] = "image update available"
+    return service
+
+
 def _compact(value):
     if isinstance(value, dict):
         compact = {
@@ -33,6 +44,7 @@ def _identities(services):
         "container",
         "kind",
         "image",
+        "configured_image",
         "image_id",
         "digest",
         "platform",
@@ -50,6 +62,7 @@ def _identities(services):
                     component.get("kind"),
                     component.get("current_version"),
                     component.get("version_evidence"),
+                    component.get("version_source_identity"),
                     component.get("inventory_status"),
                     component.get("release_identity"),
                     component.get("advisory_source_identity"),
@@ -65,12 +78,24 @@ def _identities(services):
     }
 
 
+def _observation_times(services):
+    return [
+        record["checked_at"]
+        for service in services
+        for component in service.get("components", [])
+        for owner in [component, *component.get("deployments", [])]
+        for record in owner.get("version_observations", [])
+    ]
+
+
 class Store:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as connection:
             with connection:
+                # Serialize schema inspection and changes across process startup.
+                connection.execute("BEGIN IMMEDIATE")
                 connection.execute(
                     "CREATE TABLE IF NOT EXISTS snapshot ("
                     "id INTEGER PRIMARY KEY CHECK (id = 1), "
@@ -89,6 +114,14 @@ class Store:
                         "ALTER TABLE jobs ADD COLUMN state TEXT NOT NULL "
                         "DEFAULT 'completed'"
                     )
+                for column in ("next_full_at", "next_retry_at"):
+                    if column not in columns:
+                        connection.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT")
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS security_schedule ("
+                    "name TEXT PRIMARY KEY CHECK (name = 'security'), "
+                    "full_attempted_at TEXT NOT NULL)"
+                )
                 connection.execute(
                     "CREATE TABLE IF NOT EXISTS github_cache ("
                     "repository TEXT PRIMARY KEY, fetched_at TEXT, etag TEXT, "
@@ -135,7 +168,10 @@ class Store:
             ).fetchone()
         if row is None:
             return None
-        return {"checked_at": row[0], "services": json.loads(row[1])}
+        return {
+            "checked_at": row[0],
+            "services": [_decode_service(s) for s in json.loads(row[1])],
+        }
 
     def cache_state(self) -> str:
         with closing(self._connect()) as connection:
@@ -151,7 +187,7 @@ class Store:
             if row is None:
                 return None
             services = [
-                json.loads(item[0])
+                _decode_service(json.loads(item[0]))
                 for item in connection.execute(
                     "SELECT compact_json FROM service_rows ORDER BY position"
                 )
@@ -166,9 +202,16 @@ class Store:
                 "ON snapshot.id=1 WHERE service_rows.id=?",
                 (service_id,),
             ).fetchone()
-        return {"checked_at": row[0], "services": [json.loads(row[1])]} if row else None
+        return (
+            {"checked_at": row[0], "services": [_decode_service(json.loads(row[1]))]}
+            if row
+            else None
+        )
 
-    def replace(self, checked_at: str, services: list[dict]) -> None:
+    def replace(
+        self, checked_at: str, services: list[dict], *, completed_job: str | None = None
+    ) -> None:
+        """Publish the snapshot and optional job success in one transaction."""
         ids = [service["id"] for service in services]
         if len(ids) != len(set(ids)):
             raise ValueError("service IDs must be unique")
@@ -195,6 +238,10 @@ class Store:
                         for position, service in enumerate(services)
                     ),
                 )
+                if completed_job is not None:
+                    self._record_job(
+                        connection, completed_job, checked_at, None, "completed"
+                    )
 
     def commit_evidence(self, checked_at: str, services: list[dict]) -> bool:
         """Publish checks onto the latest inventory, never onto older pod facts."""
@@ -209,38 +256,60 @@ class Store:
             inventory_changed = _identities(current["services"]) != _identities(
                 services
             )
-            if inventory_changed:
-                services = merge_inventory(current["services"], services)
+            # A same-identity inventory refresh can advance observation times
+            # while providers run. Keep the newer inventory in that case too.
+            if inventory_changed or _observation_times(
+                current["services"]
+            ) != _observation_times(services):
+                services = merge_inventory(
+                    current["services"], services, restore_history=False
+                )
             self.replace(checked_at, services)
             return inventory_changed
 
     def record_job(
-        self, name: str, attempted_at: str, error: str | None, state="completed"
+        self,
+        name: str,
+        attempted_at: str,
+        error: str | None,
+        state="completed",
+        *,
+        security_deadlines: tuple[str | None, str | None] | None = None,
     ) -> None:
         with closing(self._connect()) as connection:
             with connection:
-                connection.execute(
-                    "INSERT INTO jobs "
-                    "(name, attempted_at, succeeded_at, error, failures, state) "
-                    "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(name) DO UPDATE SET "
-                    "attempted_at=excluded.attempted_at, "
-                    "succeeded_at=CASE WHEN excluded.error IS NULL "
-                    "THEN excluded.succeeded_at ELSE jobs.succeeded_at END, "
-                    "error=excluded.error, "
-                    "state=excluded.state, "
-                    "failures=CASE WHEN excluded.error IS NULL THEN 0 "
-                    "ELSE jobs.failures+1 END",
-                    (
-                        name,
-                        attempted_at,
-                        attempted_at if error is None else None,
-                        error,
-                        0 if error is None else 1,
-                        state,
-                    ),
-                )
+                self._record_job(connection, name, attempted_at, error, state)
+                if security_deadlines is not None:
+                    connection.execute(
+                        "UPDATE jobs SET next_full_at=?, next_retry_at=? WHERE name=?",
+                        (*security_deadlines, name),
+                    )
 
-    def start_job(self, name: str, attempted_at: str) -> None:
+    @staticmethod
+    def _record_job(connection, name, attempted_at, error, state):
+        connection.execute(
+            "INSERT INTO jobs "
+            "(name, attempted_at, succeeded_at, error, failures, state) "
+            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(name) DO UPDATE SET "
+            "attempted_at=excluded.attempted_at, "
+            "succeeded_at=COALESCE(excluded.succeeded_at, jobs.succeeded_at), "
+            "error=excluded.error, "
+            "state=excluded.state, "
+            "failures=CASE WHEN excluded.error IS NULL THEN 0 "
+            "ELSE jobs.failures+1 END",
+            (
+                name,
+                attempted_at,
+                attempted_at if error is None and state == "completed" else None,
+                error,
+                0 if error is None else 1,
+                state,
+            ),
+        )
+
+    def start_job(
+        self, name: str, attempted_at: str, *, full_attempted_at: str | None = None
+    ) -> None:
         with closing(self._connect()) as connection:
             with connection:
                 connection.execute(
@@ -250,6 +319,14 @@ class Store:
                     "attempted_at=excluded.attempted_at, error=NULL, state='running'",
                     (name, attempted_at),
                 )
+                if full_attempted_at is not None:
+                    connection.execute(
+                        "INSERT INTO security_schedule (name, full_attempted_at) "
+                        "VALUES (?, ?) "
+                        "ON CONFLICT(name) DO UPDATE SET "
+                        "full_attempted_at=excluded.full_attempted_at",
+                        (name, full_attempted_at),
+                    )
 
     def read_github_cache(self, repository: str) -> dict | None:
         with closing(self._connect()) as connection:
@@ -288,18 +365,36 @@ class Store:
         with closing(self._connect()) as connection:
             rows = connection.execute(
                 "SELECT name, attempted_at, succeeded_at, error, "
-                "failures, state FROM jobs"
+                "failures, state, full_attempted_at, next_full_at, next_retry_at "
+                "FROM jobs "
+                "LEFT JOIN security_schedule USING (name)"
             ).fetchall()
-        jobs = {
-            name: {
+        jobs = {}
+        for row in rows:
+            (
+                name,
+                attempted,
+                succeeded,
+                error,
+                failures,
+                state,
+                full,
+                next_full,
+                retry,
+            ) = row
+            jobs[name] = {
                 "attempted_at": attempted,
                 "succeeded_at": succeeded,
                 "error": error,
                 "failures": failures,
                 "state": state,
+                **({"full_attempted_at": full} if full is not None else {}),
+                **(
+                    {"next_full_at": next_full, "next_retry_at": retry}
+                    if next_full is not None or retry is not None
+                    else {}
+                ),
             }
-            for name, attempted, succeeded, error, failures, state in rows
-        }
         if any(job["state"] == "running" for job in jobs.values()):
             lock_path = Path(str(self.path) + ".collection.lock")
             if lock_path.exists():

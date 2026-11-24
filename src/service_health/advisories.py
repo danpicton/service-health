@@ -8,6 +8,11 @@ from urllib.request import Request, urlopen
 
 from service_health.aggregation import aggregate_security
 from service_health.releases import _version
+from service_health.security_outcomes import (
+    SecurityCheckError,
+    SecurityOutcome,
+    provider_failure,
+)
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{1,127}$")
 _SEVERITIES = {"critical", "high", "medium", "low"}
@@ -59,44 +64,57 @@ def _compare(left, right):
     return (a > b) - (a < b)
 
 
-def _range_match(events, current):
-    active = False
+def _intervals(events):
+    """Read complete, ordered SemVer intervals. Reject ambiguous boundaries."""
     if not isinstance(events, list) or not events:
-        return None, []
-    fixed = []
+        return None
+    intervals = []
+    start = previous = None
     for event in events:
         if not isinstance(event, dict) or len(event) != 1:
-            return None, fixed
+            return None
         key, value = next(iter(event.items()))
-        if key not in (
-            "introduced",
-            "fixed",
-            "last_affected",
-            "limit",
-        ) or not isinstance(value, str):
-            return None, fixed
         boundary = (
             ((), None)
             if key == "introduced" and value == "0"
             else _version(value, "semver")
         )
-        if boundary is None:
-            return None, fixed
-        relation = _compare(current, boundary)
-        if key == "introduced":
-            if relation >= 0:
-                active = True
+        if boundary is None or (previous and _compare(boundary, previous) < 0):
+            return None
+        if key == "introduced" and start is None:
+            start = boundary
+        elif key in ("fixed", "last_affected", "limit") and start is not None:
+            intervals.append((start, boundary, key, value))
+            start = None
         else:
-            if key == "fixed":
-                fixed.append(value)
-            if relation < 0 or (key == "last_affected" and relation == 0):
-                return active, fixed
-            active = False
-    return active, fixed
+            return None
+        previous = boundary
+    if start is not None:
+        intervals.append((start, None, None, None))
+    return intervals
+
+
+def _contains(interval, version):
+    start, end, kind, _ = interval
+    if _compare(version, start) < 0:
+        return False
+    if end is None:
+        return True
+    relation = _compare(version, end)
+    return relation < 0 or (relation == 0 and kind == "last_affected")
+
+
+def _range_match(events, current):
+    intervals = _intervals(events)
+    if intervals is None:
+        return None, []
+    return any(_contains(i, current) for i in intervals), [
+        value for _, _, kind, value in intervals if kind == "fixed"
+    ]
 
 
 def _record_match(record, source, current):
-    outcomes, ranges, fixes = [], [], []
+    outcomes, ranges, fixes, exact_versions = [], [], [], []
     for affected in record.get("affected", []):
         package = affected.get("package", {}) if isinstance(affected, dict) else {}
         if (
@@ -107,9 +125,19 @@ def _record_match(record, source, current):
         if current is None:
             outcomes.append(None)
         versions = affected.get("versions", [])
-        if isinstance(versions, list) and versions:
-            if current is not None:
-                outcomes.append(any(_version(v, "semver") == current for v in versions))
+        if not isinstance(versions, list) or any(
+            not isinstance(v, str) for v in versions
+        ):
+            raise ValueError("invalid affected versions")
+        exact_versions.extend(versions)
+        if not versions and not affected.get("ranges"):
+            outcomes.append(None)
+        if versions and current is not None:
+            parsed_versions = [_version(v, "semver") for v in versions]
+            if current in parsed_versions:
+                outcomes.append(True)
+            else:
+                outcomes.append(None if None in parsed_versions else False)
         for item in affected.get("ranges", []):
             ranges.append(item)
             if (
@@ -123,12 +151,112 @@ def _record_match(record, source, current):
                 outcomes.append(outcome)
                 fixes.extend(fixed)
     if not outcomes:
-        return None, ranges, fixes
+        return None, ranges, fixes, exact_versions
     if True in outcomes:
-        return (None if None in outcomes else True), ranges, fixes
+        return (None if None in outcomes else True), ranges, fixes, exact_versions
     if None in outcomes:
-        return None, ranges, fixes
-    return False, ranges, fixes
+        return None, ranges, fixes, exact_versions
+    return False, ranges, fixes, exact_versions
+
+
+def _candidate_outcome(provenance, deployed, candidate):
+    # Older snapshots did not retain OSV's explicit affected-version list.
+    if "affected_versions" not in provenance:
+        return "unknown"
+    versions = [_version(v, "semver") for v in provenance["affected_versions"]]
+    if candidate in versions:
+        return "still affected"
+    intervals = []
+    for item in provenance.get("affected_ranges", []):
+        if not isinstance(item, dict) or item.get("type") != "SEMVER":
+            return "unknown"
+        parsed = _intervals(item.get("events"))
+        if parsed is None:
+            return "unknown"
+        intervals.extend(parsed)
+    if any(_contains(interval, candidate) for interval in intervals):
+        return "still affected"
+    if None in versions:
+        return "unknown"
+    applicable = [interval for interval in intervals if _contains(interval, deployed)]
+    intervening = [
+        interval
+        for interval in intervals
+        if _compare(deployed, interval[0]) < 0 and _compare(interval[0], candidate) <= 0
+    ]
+    relevant = applicable + intervening
+    if not applicable or any(interval[2] != "fixed" for interval in relevant):
+        return "unknown"
+    # An explicit affected release outside those intervals has no documented fix.
+    for version in versions:
+        if _compare(deployed, version) < 0 and _compare(version, candidate) < 0:
+            if not any(_contains(interval, version) for interval in relevant):
+                return "unknown"
+    return "fixed"
+
+
+def candidate_assessments(component, inventory_stale):
+    """Join separately cached releases and OSV findings after freshness projection."""
+    results = {}
+    deployed_text = component.get("advisory_version", component.get("current_version"))
+    source = (component.get("advisory_identity") or {}).get("source", {})
+    prefix = source.get("current_prefix", "")
+    deployed = _version(
+        deployed_text.removeprefix(prefix)
+        if isinstance(deployed_text, str) and isinstance(prefix, str)
+        else None,
+        "semver",
+    )
+    stale = (
+        inventory_stale
+        or component.get("advisory_stale")
+        or component.get("release_stale")
+    )
+    for finding in component.get("advisory_findings", []):
+        for group, release in component.get("release_candidates", {}).items():
+            if group not in ("routine", "major"):
+                continue
+            candidate = _version(release.get("normalized_version"), "semver")
+            status = "unknown"
+            if (
+                stale
+                or component.get("update_status") != "update available"
+                or component.get("advisory_error")
+            ):
+                reason = (
+                    "Current release, inventory, or advisory evidence is unavailable."
+                )
+            elif (
+                deployed is None
+                or finding.get("match") != "confirmed"
+                or finding.get("current_version") != deployed_text
+                or component.get("version_state", "observed") != "observed"
+            ):
+                reason = (
+                    "Advisory applicability is uncertain for the deployed replicas."
+                )
+            elif candidate is None or _compare(candidate, deployed) <= 0:
+                reason = "The candidate lacks a comparable newer application version."
+            else:
+                outcomes = {
+                    _candidate_outcome(p, deployed, candidate)
+                    for p in finding.get("provenance", [])
+                }
+                if outcomes == {"fixed"}:
+                    status, reason = "fixed", "The candidate includes the advisory fix."
+                elif outcomes == {"still affected"}:
+                    status, reason = (
+                        "still affected",
+                        "The advisory still covers this candidate.",
+                    )
+                else:
+                    reason = "The advisory records do not establish a fixed candidate."
+            results.setdefault(finding["id"], {})[group] = {
+                **release,
+                "status": status,
+                "reason": reason,
+            }
+    return results
 
 
 def _severity(record):
@@ -160,7 +288,13 @@ def _groups(records):
 
 
 def apply_advisory_checks(
-    services, catalog, fetch_advisories=osv_advisories, clock=None, only_failed=False
+    services,
+    catalog,
+    fetch_advisories=osv_advisories,
+    clock=None,
+    only_failed=False,
+    *,
+    select=None,
 ):
     """Return cached advisory evidence, retaining prior evidence on failures."""
     checked_at = (
@@ -179,6 +313,8 @@ def apply_advisory_checks(
         for component in service.get("components", []):
             if only_failed and component.get("advisory_coverage") == "complete":
                 continue
+            if select is not None and not select(service, component):
+                continue
             source = mapping.get(component["id"], {}).get("advisory_source")
             if (
                 not isinstance(source, dict)
@@ -189,6 +325,8 @@ def apply_advisory_checks(
             ):
                 component.update(
                     advisory_coverage="missing",
+                    advisory_outcome=SecurityOutcome.UNSUPPORTED,
+                    advisory_reason="advisory_source_unsupported",
                     advisory_gap="no supported structured advisory source configured",
                     advisory_error=None,
                     advisory_stale=False,
@@ -198,16 +336,18 @@ def apply_advisory_checks(
                     advisory_identity=None,
                 )
                 continue
+            current_text = component.get(
+                "advisory_version", component.get("current_version")
+            )
             identity = {
                 "source": source,
-                "current_version": component.get("current_version"),
+                "current_version": current_text,
             }
             try:
                 records = fetch_advisories(source)
                 if not isinstance(records, list):
                     raise ValueError("advisory response must be an array")
                 parsed = []
-                current_text = component.get("current_version")
                 prefix = source.get("current_prefix", "")
                 current = _version(
                     current_text[len(prefix) :]
@@ -231,7 +371,9 @@ def apply_advisory_checks(
                         not isinstance(v, str) or not _ID.fullmatch(v) for v in aliases
                     ):
                         raise ValueError("invalid advisory aliases")
-                    outcome, ranges, fixes = _record_match(record, source, current)
+                    outcome, ranges, fixes, exact_versions = _record_match(
+                        record, source, current
+                    )
                     if not any(
                         isinstance(a, dict)
                         and isinstance(a.get("package"), dict)
@@ -252,6 +394,7 @@ def apply_advisory_checks(
                             "aliases": aliases,
                             "outcome": outcome,
                             "ranges": ranges,
+                            "affected_versions": exact_versions,
                             "fixes": fixes,
                             "severity": _severity(record),
                             "url": f"https://osv.dev/vulnerability/{record['id']}",
@@ -290,6 +433,7 @@ def apply_advisory_checks(
                                     "id": item["id"],
                                     "url": item["url"],
                                     "affected_ranges": item["ranges"],
+                                    "affected_versions": item["affected_versions"],
                                 }
                                 for item in items
                             ],
@@ -304,6 +448,12 @@ def apply_advisory_checks(
                         f["match"] == "possible" for f in findings
                     ),
                     advisory_coverage="missing" if uncertain else "complete",
+                    advisory_outcome=SecurityOutcome.UNAVAILABLE
+                    if uncertain
+                    else SecurityOutcome.SUCCESS,
+                    advisory_reason="advisory_applicability_unknown"
+                    if uncertain
+                    else None,
                     advisory_gap="deployed version or advisory range is ambiguous"
                     if uncertain
                     else None,
@@ -312,13 +462,33 @@ def apply_advisory_checks(
                     advisory_error=None,
                     advisory_stale=False,
                 )
-            except (OSError, RuntimeError, ValueError, TypeError, KeyError) as error:
+            except (
+                OSError,
+                RuntimeError,
+                ValueError,
+                TypeError,
+                KeyError,
+                AttributeError,
+            ) as error:
+                failure = (
+                    SecurityCheckError(
+                        SecurityOutcome.MALFORMED,
+                        "malformed_advisory_response",
+                        "Invalid advisory provider response",
+                    )
+                    if isinstance(
+                        error, (ValueError, TypeError, KeyError, AttributeError)
+                    )
+                    else provider_failure(error)
+                )
                 retained = bool(component.get("advisory_checked_at")) and (
                     component.get("advisory_identity") == identity
                 )
                 component.update(
-                    advisory_coverage="failed",
-                    advisory_error=str(error),
+                    advisory_coverage=failure.coverage,
+                    advisory_outcome=failure.outcome,
+                    advisory_reason=failure.reason,
+                    advisory_error=str(failure),
                     advisory_stale=retained,
                     advisory_gap="advisory provider failed",
                     advisory_findings=component.get("advisory_findings", [])

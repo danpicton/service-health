@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from service_health.advisories import apply_advisory_checks
+from service_health.freshness import DEFAULT_INVENTORY_MAX_AGE
 from service_health.github_cache import GitHubReleases
 from service_health.http import create_server
 from service_health.images import apply_image_checks
@@ -38,6 +39,9 @@ def main() -> None:
     parser.add_argument("--retry-max", type=int, default=3600)
     parser.add_argument("--release-max-age", type=int, default=43200)
     parser.add_argument("--security-max-age", type=int, default=172800)
+    parser.add_argument(
+        "--inventory-max-age", type=int, default=DEFAULT_INVENTORY_MAX_AGE
+    )
     parser.add_argument("--scan-interval", type=int, default=86400)
     parser.add_argument("--scan-timeout", type=int, default=300)
     parser.add_argument("--scan-workers", type=int, default=2)
@@ -60,7 +64,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     store = Store(args.db)
-    if min(args.release_max_age, args.security_max_age) < 1:
+    if min(args.release_max_age, args.security_max_age, args.inventory_max_age) < 1:
         parser.error("freshness limits must be positive")
     if args.scheduled:
         if not args.catalog:
@@ -162,7 +166,12 @@ def main() -> None:
         refresh_inventory(store, collect)
         return
     server = create_server(
-        store, args.host, args.port, args.release_max_age, args.security_max_age
+        store,
+        args.host,
+        args.port,
+        args.release_max_age,
+        args.security_max_age,
+        args.inventory_max_age,
     )
     try:
         server.serve_forever()

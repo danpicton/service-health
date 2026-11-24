@@ -56,7 +56,7 @@ def _newer(candidate, current) -> bool:
 
 
 def _normalized(value: str | None, prefix: str) -> str | None:
-    if value is None:
+    if not isinstance(value, str):
         return None
     if prefix and value.startswith(prefix):
         return value[len(prefix) :]
@@ -101,35 +101,32 @@ def _repository(source: dict) -> str:
 def _check(
     component: dict, source: dict | None, fetch_releases, checked_at: str
 ) -> None:
+    policy = (source or {}).get("version_policy", "semver")
+    reason = None
     if not source:
+        reason = "no release source configured"
+    elif policy not in ("semver", "numeric"):
+        reason = "unsupported version policy"
+    elif source.get("type") != "github_releases":
+        reason = "unsupported release source"
+    if reason:
         component.update(
             update_status="unknown",
-            update_reason="no release source configured",
+            update_reason=reason,
             candidate_version=None,
             update_kind=None,
+            release_candidates={},
+            release_source_url=None,
+            release_checked_at=None,
+            release_stale=False,
+            release_error=None,
         )
         return
-    policy = source.get("version_policy", "semver")
-    if policy not in ("semver", "numeric"):
-        component.update(
-            update_status="unknown",
-            update_reason="unsupported version policy",
-            candidate_version=None,
-            update_kind=None,
-        )
-        return
-    if source.get("type") != "github_releases":
-        component.update(
-            update_status="unknown",
-            update_reason="unsupported release source",
-            candidate_version=None,
-            update_kind=None,
-        )
-        return
-    current = _version(
-        _normalized(component.get("current_version"), source.get("current_prefix", "")),
-        policy,
-    )
+    current_text = component.get("current_version")
+    if "version_state" not in component:
+        # Legacy snapshots retain the observed spelling.
+        current_text = _normalized(current_text, source.get("current_prefix", ""))
+    current = _version(current_text, policy)
     # Ranges and image tags are deliberately not interpreted as deployed versions.
     try:
         releases = fetch_releases(source)
@@ -161,6 +158,7 @@ def _check(
     component["release_checked_at"] = checked_at
     component["release_error"] = None
     component["release_stale"] = False
+    component["release_candidates"] = {}
     if not candidates:
         component.update(
             candidate_version=None,
@@ -170,42 +168,71 @@ def _check(
             update_reason="no eligible releases",
         )
         return
-    best = candidates[0]
-    for candidate in candidates[1:]:
-        if _newer(candidate[0], best[0]):
-            best = candidate
-    parsed, tag, link = best
+    # Stable versions sort after prereleases with the same numeric core.
+    candidates.sort(key=lambda item: (item[0][0], item[0][1] is None, item[0][1]))
+    parsed, tag, link = candidates[-1]
     component["candidate_version"] = tag
     component["release_source_url"] = link
+    # A configured SemVer policy defines its own major boundary. Numeric and
+    # default parsing alone do not establish a project's release lines.
+    segments = source.get(
+        "release_line_segments", 1 if source.get("version_policy") == "semver" else None
+    )
+    comparable = False
+    incompatible = False
+    for parsed, tag, link in candidates:
+        group = "unclassified"
+        if current is not None:
+            if len(parsed[0]) != len(current[0]):
+                incompatible = True
+                continue
+            comparable = True
+            if not _newer(parsed, current):
+                continue
+            if type(segments) is int and 1 <= segments <= len(current[0]):
+                group = (
+                    "routine"
+                    if parsed[0][:segments] == current[0][:segments]
+                    else "major"
+                )
+        component["release_candidates"][group] = {
+            "version": tag,
+            "normalized_version": _normalized(tag, source.get("tag_prefix", ""))
+            .strip()
+            .removeprefix("v"),
+            "source_url": link,
+        }
+
+    kind = None
+    reason = None
     if current is None:
-        component.update(
-            update_status="unknown",
-            update_kind=None,
-            update_reason="missing verified application version or ambiguous version",
+        status = "unknown"
+        reason = (
+            component.get("version_evidence")
+            or "missing verified application version or ambiguous version"
         )
-    elif len(parsed[0]) != len(current[0]):
-        component.update(
-            update_status="unknown",
-            update_kind=None,
-            update_reason="version segment counts differ",
-        )
-    elif _newer(parsed, current):
-        kind = (
-            "major migration"
-            if parsed[0][0] > current[0][0]
-            else "minor"
-            if parsed[0][1] > current[0][1]
-            else "patch"
-            if len(parsed[0]) > 2 and parsed[0][2] > current[0][2]
-            else "prerelease"
-        )
-        component.update(
-            update_status="update available", update_kind=kind, update_reason=None
-        )
+    elif component["release_candidates"]:
+        status = "update available"
+        if "major" in component["release_candidates"]:
+            kind = "major migration"
+        elif "unclassified" in component["release_candidates"]:
+            kind = "unclassified"
+            reason = "no reliable release grouping rule"
+        else:
+            routine = component["release_candidates"]["routine"]
+            core = _version(routine["normalized_version"], policy)[0]
+            if core[1] != current[0][1]:
+                kind = "minor"
+            elif core != current[0]:
+                kind = "patch"
+            else:
+                kind = "prerelease"
+    elif not comparable or incompatible:
+        status = "unknown"
+        reason = "version segment counts differ"
     else:
-        component.update(
-            update_status="up to date", update_kind=None, update_reason=None
-        )
+        status = "up to date"
+    component.update(update_status=status, update_kind=kind, update_reason=reason)
 
 
 def apply_release_checks(

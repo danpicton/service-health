@@ -105,7 +105,7 @@ def probe(store, mode):
                     "Metadata": {
                         "ImageConfig": {"os": "linux", "architecture": "amd64"}
                     },
-                    "Results": [],
+                    "Results": [{"Target": "alpine", "Class": "os-pkgs"}],
                 }
 
         snapshot = store.read()
@@ -178,14 +178,18 @@ def probe(store, mode):
                 f"GET {path} HTTP/1.1\r\nHost: hub.example\r\n\r\n".encode()
             )
             handler(connection, ("offline", 0), None)
-            return len(connection.output.getvalue().split(b"\r\n\r\n", 1)[1])
+            head, body = connection.output.getvalue().split(b"\r\n\r\n", 1)
+            return int(head.split(b" ", 2)[1]), len(body)
     else:
 
         def one(path):
-            return len(request(store, path)[1].encode())
+            status, body = request(store, path)
+            return status, len(body.encode())
 
     with ThreadPoolExecutor(max_workers=4) as pool:
-        for path, size in zip(paths, pool.map(one, paths)):
+        for path, (status, size) in zip(paths, pool.map(one, paths), strict=True):
+            if status != 200:
+                raise RuntimeError(f"{mode} {path} returned HTTP {status}")
             key = (
                 "homepage"
                 if path.endswith("/homepage")

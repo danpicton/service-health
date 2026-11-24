@@ -11,6 +11,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from service_health.aggregation import aggregate_security
+from service_health.security_outcomes import (
+    SecurityCheckError,
+    SecurityOutcome,
+    provider_failure,
+)
+from service_health.trivy_command import TrivyFailure, run_trivy
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}$")
 _PLATFORM = re.compile(r"[a-z0-9]+/[a-z0-9]+(?:/[a-z0-9]+)?$")
@@ -46,6 +52,13 @@ def _target(deployment):
     return f"{repository}@{digest}"
 
 
+def scan_identity(deployment, use_external_reports=False):
+    """Identify the inputs shared by remote checks and external report lookup."""
+    if not use_external_reports and (target := _target(deployment)):
+        return (target, deployment["platform"])
+    return tuple(deployment.get(field) for field in ("image", "digest", "platform"))
+
+
 class ExternalReports:
     """Read bounded, operator-supplied Trivy reports from a non-secret directory."""
 
@@ -67,8 +80,8 @@ class ExternalReports:
             return None, "deployed image platform unavailable"
         try:
             paths = sorted(self.directory.iterdir())
-        except OSError as error:
-            return None, f"external report directory unavailable: {error}"
+        except OSError:
+            return None, "external report directory unavailable"
         if len(paths) > 128:
             return None, "external report directory exceeds 128 entries"
         candidates = []
@@ -128,7 +141,7 @@ class TrivyScanner:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _run(self, args):
-        result = subprocess.run(
+        run_trivy(
             [
                 self.binary,
                 "image",
@@ -139,13 +152,9 @@ class TrivyScanner:
                 "--disable-telemetry",
                 *args,
             ],
-            capture_output=True,
-            text=True,
-            timeout=self.timeout + 15,
-            check=False,
+            "db_refresh" if "--download-db-only" in args else "scan",
+            self.timeout + 15,
         )
-        if result.returncode:
-            raise RuntimeError(f"Trivy exited with status {result.returncode}")
 
     def refresh_db(self):
         self._run(["--download-db-only"])
@@ -174,43 +183,91 @@ class TrivyScanner:
                     target,
                 ]
             )
-            if output.stat().st_size > _MAX_REPORT_BYTES:
-                raise ValueError("Trivy report exceeds 20 MiB")
-            return json.loads(output.read_text(encoding="utf-8"))
+            try:
+                if output.stat().st_size > _MAX_REPORT_BYTES:
+                    raise TrivyFailure(
+                        SecurityOutcome.MALFORMED,
+                        "report_too_large",
+                        "Report exceeds 20 MiB",
+                        "report_parsing",
+                        0,
+                    )
+                return json.loads(output.read_text(encoding="utf-8"))
+            except (ValueError, OSError, RecursionError):
+                raise TrivyFailure(
+                    SecurityOutcome.MALFORMED,
+                    "malformed_report",
+                    "Could not read a valid JSON report",
+                    "report_parsing",
+                    0,
+                ) from None
 
 
-def _findings(report, target, platform):
+def _findings(report, target, platform, *, external=False):
     if not isinstance(report, dict) or report.get("SchemaVersion") != 2:
         raise ValueError("invalid Trivy JSON report")
+    if report.get("ArtifactType", "container_image") != "container_image":
+        raise ValueError("Trivy report artifact is not a container image")
     artifact = report.get("ArtifactName")
-    repo_digests = report.get("Metadata", {}).get("RepoDigests", [])
-    # Trivy may normalize the registry host in ArtifactName; a reported digest must
-    # still match the exact requested digest. A report with no identity is rejected.
+    if "ArtifactName" in report and not isinstance(artifact, str):
+        raise ValueError("invalid Trivy report artifact name")
+    metadata = report.get("Metadata")
+    if not isinstance(metadata, dict):
+        raise ValueError("invalid Trivy report metadata")
+    repo_digests = metadata.get("RepoDigests", [])
+    if not isinstance(repo_digests, list) or not all(
+        isinstance(value, str) for value in repo_digests
+    ):
+        raise ValueError("Trivy report RepoDigests must be an array of strings")
     digest = target.rsplit("@", 1)[1]
+    # A tag or archive name can rely on RepoDigests. A digest in the scanned
+    # artifact name must agree regardless of other reported repository names.
+    _, separator, artifact_digest = (artifact or "").rpartition("@")
+    if (
+        separator
+        and artifact_digest.startswith("sha256:")
+        and artifact_digest != digest
+    ):
+        raise ValueError("Trivy report artifact digest differs from deployment")
     identities = [artifact, *repo_digests]
     if not any(
         isinstance(value, str) and value.endswith("@" + digest) for value in identities
     ):
         raise ValueError("Trivy report digest differs from deployed digest")
-    config = report.get("Metadata", {}).get("ImageConfig", {})
-    if not config or f"{config.get('os')}/{config.get('architecture')}" != "/".join(
-        platform.split("/")[:2]
+    if external and target not in identities:
+        raise ValueError(
+            "external Trivy report image identity differs from deployed image"
+        )
+    config = metadata.get("ImageConfig")
+    platform_parts = platform.split("/")
+    if (
+        not isinstance(config, dict)
+        or [config.get("os"), config.get("architecture")] != platform_parts[:2]
     ):
         raise ValueError("Trivy report platform differs from deployed platform")
-    if (
-        config
-        and len(platform.split("/")) == 3
-        and config.get("variant") != platform.split("/")[2]
-    ):
+    if len(platform_parts) == 3 and config.get("variant") != platform_parts[2]:
         raise ValueError("Trivy report platform variant differs from deployed platform")
-    results = report.get("Results")
+    results = report.get("Results", [])
     if not isinstance(results, list):
-        raise ValueError("Trivy report has no results array")
+        raise ValueError("Trivy report Results must be an array")
     findings = []
+    package_target = False
     for result in results:
         if not isinstance(result, dict):
             raise ValueError("invalid Trivy result")
-        for vulnerability in result.get("Vulnerabilities") or []:
+        name = result.get("Target")
+        if (
+            result.get("Class") in ("os-pkgs", "lang-pkgs")
+            and isinstance(name, str)
+            and name.strip()
+        ):
+            package_target = True
+        vulnerabilities = result.get("Vulnerabilities", [])
+        if not isinstance(vulnerabilities, list):
+            raise ValueError("Trivy result Vulnerabilities must be an array")
+        for vulnerability in vulnerabilities:
+            if not isinstance(vulnerability, dict):
+                raise ValueError("invalid Trivy vulnerability")
             issue = vulnerability.get("VulnerabilityID")
             package = vulnerability.get("PkgName")
             severity = vulnerability.get("Severity")
@@ -227,11 +284,17 @@ def _findings(report, target, platform):
                     "fixed_version": vulnerability.get("FixedVersion") or None,
                     "source": "Trivy",
                     "source_url": vulnerability.get("PrimaryURL") or None,
-                    "target": result.get("Target"),
+                    "target": name,
                     "digest": digest,
                     "platform": platform,
                 }
             )
+    if not findings and not package_target:
+        raise SecurityCheckError(
+            SecurityOutcome.UNSUPPORTED,
+            "no_supported_package_targets",
+            "No supported package targets in Trivy report",
+        )
     return findings
 
 
@@ -243,6 +306,9 @@ def apply_scan_checks(
     external_reports=None,
     progress=None,
     only_failed=False,
+    *,
+    select=None,
+    on_checked=None,
 ):
     """Refresh the DB and scans, retaining prior evidence on failure."""
     if max_workers < 1 or max_workers > 4:
@@ -255,13 +321,26 @@ def apply_scan_checks(
         for service in result
         for component in service.get("components", [])
         for deployment in component.get("deployments", [])
-        if not only_failed or deployment.get("scan_coverage") != "complete"
+        if (not only_failed or deployment.get("scan_coverage") != "complete")
+        and (select is None or select(deployment))
     ]
+    groups = {}
+    for deployment in deployments:
+        key = scan_identity(deployment, external_reports is not None)
+        groups.setdefault(key, []).append(deployment)
+    db_error = None
     try:
-        scanner.refresh_db()
-        db_error = None
+        if any(_target(group[0]) for group in groups.values()):
+            scanner.refresh_db()
+    except TrivyFailure as error:
+        db_error = error
     except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
-        db_error = str(error)
+        failure = provider_failure(error)
+        db_error = SecurityCheckError(
+            failure.outcome,
+            "database_refresh_failed",
+            f"vulnerability DB refresh failed: {failure}",
+        )
 
     def check(deployment):
         target = _target(deployment)
@@ -275,111 +354,127 @@ def apply_scan_checks(
                     if ":" in tail:
                         image = image[: -(len(tail) - tail.rfind(":"))]
                     reference = f"{image}@{deployment['digest']}"
-                    metadata = report.get("Metadata") or {}
-                    if not isinstance(metadata, dict):
-                        raise ValueError("external Trivy report metadata invalid")
-                    identities = [
-                        report.get("ArtifactName"),
-                        *metadata.get("RepoDigests", []),
-                    ]
-                    if reference not in identities:
-                        raise ValueError(
-                            "external Trivy report image identity differs "
-                            "from deployed image"
-                        )
-                    findings = _findings(report, reference, deployment["platform"])
+                    findings = _findings(
+                        report, reference, deployment["platform"], external=True
+                    )
                     for finding in findings:
                         finding["scan_source"] = "external"
                         finding["scan_reported_at"] = scanned_at
                     return (
-                        deployment,
                         findings,
                         None,
                         "complete",
                         "external",
                         scanned_at,
                     )
-                except (KeyError, TypeError, ValueError) as error:
-                    return deployment, None, str(error), "missing", None, None
+                except SecurityCheckError as failure:
+                    return None, failure, failure.coverage, None, None
+                except (AttributeError, KeyError, TypeError, ValueError) as error:
+                    failure = SecurityCheckError(
+                        SecurityOutcome.MALFORMED, "malformed_report", str(error)
+                    )
+                    return None, failure, "missing", None, None
             if target is None:
-                return deployment, None, external_error, "missing", None, None
+                failure = SecurityCheckError(
+                    SecurityOutcome.UNAVAILABLE,
+                    "external_report_unavailable",
+                    external_error,
+                )
+                return None, failure, "missing", None, None
         if target is None:
-            return (
-                deployment,
-                None,
+            failure = SecurityCheckError(
+                SecurityOutcome.UNAVAILABLE,
+                "image_not_pullable",
                 "running image digest/platform or pullable registry unavailable",
-                "missing",
-                None,
-                None,
             )
-        if db_error:
-            return (
-                deployment,
-                None,
-                f"vulnerability DB refresh failed: {db_error}",
-                "failed",
-                None,
-                None,
-            )
+            return None, failure, "missing", None, None
+        if db_error is not None:
+            return None, db_error, db_error.coverage, None, None
         try:
             report = scanner.scan(target, deployment["platform"])
-            findings = _findings(report, target, deployment["platform"])
-            for finding in findings:
-                finding["scan_source"] = "Trivy"
-                finding["scan_reported_at"] = checked_at
-            return deployment, findings, None, "complete", "Trivy", checked_at
+        except ValueError:
+            failure = SecurityCheckError(
+                SecurityOutcome.MALFORMED, "malformed_report", "Invalid scanner report"
+            )
+            return None, failure, "failed", None, None
         except (
             OSError,
             RuntimeError,
-            ValueError,
             KeyError,
             TypeError,
             subprocess.TimeoutExpired,
         ) as error:
-            return deployment, None, str(error), "failed", None, None
+            failure = provider_failure(error)
+            return None, failure, failure.coverage, None, None
+        try:
+            findings = _findings(report, target, deployment["platform"])
+        except SecurityCheckError as failure:
+            return None, failure, failure.coverage, None, None
+        except (AttributeError, KeyError, TypeError, ValueError) as error:
+            failure = TrivyFailure(
+                SecurityOutcome.MALFORMED,
+                "malformed_report",
+                str(error),
+                "report_parsing",
+                0 if isinstance(scanner, TrivyScanner) else None,
+            )
+            return None, failure, "failed", None, None
+        for finding in findings:
+            finding["scan_source"] = "Trivy"
+            finding["scan_reported_at"] = checked_at
+        return findings, None, "complete", "Trivy", checked_at
+
+    def update(deployment, findings, failure, coverage, source, scan_time):
+        previous_identity = (
+            deployment.get("scan_digest"),
+            deployment.get("scan_platform"),
+        )
+        current_identity = (deployment.get("digest"), deployment.get("platform"))
+        retained = previous_identity == current_identity and bool(
+            deployment.get("scan_checked_at")
+        )
+        deployment["scan_outcome"] = (
+            failure.outcome if failure else SecurityOutcome.SUCCESS
+        )
+        deployment["scan_reason"] = failure.reason if failure else None
+        deployment["scan_failure_phase"] = getattr(failure, "phase", None)
+        deployment["scan_exit_status"] = getattr(failure, "exit_status", None)
+        deployment["scan_failed_at"] = checked_at if failure else None
+        if coverage == "complete":
+            deployment.update(
+                scan_findings=findings,
+                scan_coverage="complete",
+                scan_error=None,
+                scan_digest=current_identity[0],
+                scan_platform=current_identity[1],
+                scan_checked_at=checked_at,
+                scan_source=source,
+                scan_reported_at=scan_time,
+                scan_stale=False,
+            )
+        else:
+            deployment.update(
+                scan_findings=deployment.get("scan_findings", []) if retained else [],
+                scan_coverage=coverage,
+                scan_error=str(failure),
+                scan_digest=current_identity[0],
+                scan_platform=current_identity[1],
+                scan_stale=retained,
+                scan_checked_at=deployment.get("scan_checked_at") if retained else None,
+                scan_source=deployment.get("scan_source") if retained else None,
+                scan_reported_at=deployment.get("scan_reported_at")
+                if retained
+                else None,
+            )
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(check, deployment) for deployment in deployments]
+        futures = {executor.submit(check, group[0]): group for group in groups.values()}
         for future in as_completed(futures):
-            deployment, findings, error, coverage, source, scan_time = future.result()
-            previous_identity = (
-                deployment.get("scan_digest"),
-                deployment.get("scan_platform"),
-            )
-            current_identity = (deployment.get("digest"), deployment.get("platform"))
-            retained = previous_identity == current_identity and bool(
-                deployment.get("scan_checked_at")
-            )
-            if coverage == "complete":
-                deployment.update(
-                    scan_findings=findings,
-                    scan_coverage="complete",
-                    scan_error=None,
-                    scan_digest=current_identity[0],
-                    scan_platform=current_identity[1],
-                    scan_checked_at=checked_at,
-                    scan_source=source,
-                    scan_reported_at=scan_time,
-                    scan_stale=False,
-                )
-            else:
-                deployment.update(
-                    scan_findings=deployment.get("scan_findings", [])
-                    if retained
-                    else [],
-                    scan_coverage=coverage,
-                    scan_error=error,
-                    scan_digest=current_identity[0],
-                    scan_platform=current_identity[1],
-                    scan_stale=retained,
-                    scan_checked_at=deployment.get("scan_checked_at")
-                    if retained
-                    else None,
-                    scan_source=deployment.get("scan_source") if retained else None,
-                    scan_reported_at=deployment.get("scan_reported_at")
-                    if retained
-                    else None,
-                )
+            check_result = future.result()
+            for deployment in futures[future]:
+                update(deployment, *check_result)
+                if on_checked is not None:
+                    on_checked(deployment)
             if progress is not None:
                 _aggregate_scans(result)
                 progress(result)
